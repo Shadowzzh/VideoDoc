@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videodoc"
+version = "0.1.0"
+description = "把视频链接转成带时间锚点和配图的图文文章"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["video", "llm", "transcription", "article", "whisper"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "flask>=3.1,<4",
+    "markdown>=3.8,<4",
+    "yt-dlp[default,deno]==2026.8.19",
+    "claude-real-video==0.10.5",
+    "pywhispercpp==1.5.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<9"]
+
+[project.scripts]
+videodoc = "videodoc.cli:main"
+
+[tool.setuptools]
+# 前端不在包内：它需要先在仓库根目录用 pnpm 构建，属于部署前置步骤。
+packages = ["videodoc", "videodoc.integrations"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
