@@ -1,4 +1,4 @@
-import { ListVideoIcon, PlusIcon } from "lucide-react"
+import { ListVideoIcon, PlusIcon, SettingsIcon } from "lucide-react"
 
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
@@ -68,6 +68,17 @@ export function AppSidebar({ tasks, loading, activeTaskId, onNavigate }: AppSide
           })}
         </div>
       </ScrollArea>
+      <Separator />
+      <div className="p-3">
+        <Button
+          nativeButton={false}
+          variant="ghost"
+          render={<a href="/app/settings" onClick={onNavigate} />}
+          className="w-full justify-start"
+        >
+          <SettingsIcon />设置
+        </Button>
+      </div>
     </aside>
   )
 }

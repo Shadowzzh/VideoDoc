@@ -115,6 +115,11 @@ export interface ArticleImage {
   selection_reason: string
   ocr_text?: string
   ocr_error?: string
+  vision_text?: string
+  vision_error?: string
+  vision_provider?: string
+  vision_model?: string
+  vision_elapsed_ms?: number
 }
 
 export interface VideoResult {
@@ -126,4 +131,76 @@ export interface VideoResult {
   images: ArticleImage[]
   article_markdown: string
   article_html: string
+}
+
+export type SettingsValue = string | number | boolean | Record<string, string>
+
+export interface SettingsFieldOption {
+  value: string
+  label: string
+}
+
+export type SettingsFieldType = "text" | "password" | "number" | "select" | "boolean" | "textarea"
+
+/** 单个设置项声明：前端按 type 通用渲染，不在前端写死任何能力字段。 */
+export interface SettingsField {
+  key: string
+  label: string
+  type: SettingsFieldType
+  help: string
+  placeholder: string
+  options: SettingsFieldOption[]
+  minimum: number | null
+  maximum: number | null
+  secret: boolean
+  show_when: { key: string; value: string } | null
+}
+
+export interface SettingsGroup {
+  title: string
+  description: string
+  fields: SettingsField[]
+}
+
+/** 左侧分类：对应一个可插拔能力（当前只有「图像识别」）。 */
+export interface SettingsCategory {
+  key: string
+  label: string
+  description: string
+  available: boolean
+  unavailable_reason: string
+  groups: SettingsGroup[]
+}
+
+export interface SettingsResponse {
+  /** 当前生效值：capabilities.<能力 key>.<点分字段 key> */
+  capabilities: Record<string, Record<string, SettingsValue>>
+  /** 左侧分类 + 右侧字段的声明式 schema */
+  categories: SettingsCategory[]
+  settings_path: string
+}
+
+export interface SettingsUpdate {
+  capabilities?: Record<string, Record<string, SettingsValue>>
+}
+
+export interface SettingsChannelResult {
+  ok: boolean
+  detail: string
+  endpoint?: string
+  model_present?: boolean | null
+}
+
+export interface SettingsCapabilityResult {
+  label?: string
+  available?: boolean
+  ok?: boolean
+  engine?: string
+  detail?: string
+  local?: SettingsChannelResult
+  external?: SettingsChannelResult
+}
+
+export interface SettingsTestResult extends SettingsCapabilityResult {
+  capabilities?: Record<string, SettingsCapabilityResult>
 }

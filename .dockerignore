@@ -1,0 +1,20 @@
+# 只把运行必需的东西送进构建上下文，避免把本机 venv/节点模块/私有文档带进镜像
+.git
+.github
+.venv
+node_modules
+frontend/node_modules
+frontend/dist
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.runtime
+work
+private-docs
+docs
+examples
+tests
+*.log
+.env
+.secrets
+.DS_Store

@@ -19,6 +19,8 @@ from flask import (
     send_from_directory,
 )
 
+from . import capabilities as capability_registry
+from . import settings as settings_module
 from .pipeline import PipelineConfig, PipelineError, prepare_resume, run_pipeline
 from .task_store import TaskConfirmationError, TaskStateError, TaskStore
 
@@ -84,6 +86,39 @@ def valid_source_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def _field_options(view: dict, capability_key: str, field_key: str) -> list[dict]:
+    for category in view.get("categories", []):
+        if category.get("key") != capability_key:
+            continue
+        for group in category.get("groups", []):
+            for item in group.get("fields", []):
+                if item.get("key") == field_key:
+                    return list(item.get("options") or [])
+    return []
+
+
+def _legacy_settings_view(view: dict) -> dict:
+    """兼容旧前端的一次性视图（新版设置页上线后可删）。
+
+    旧页面读 ``vision.engine/local/external`` 与 ``engines/protocols``；这里从新的能力
+    结构派生出来，保证新旧前端切换期间页面不报错。
+    """
+    image = (view.get("capabilities") or {}).get("image_vision", {})
+    local = {k.split(".", 1)[1]: v for k, v in image.items() if k.startswith("local.")}
+    external = {k.split(".", 1)[1]: v for k, v in image.items() if k.startswith("external.")}
+    engine_options = _field_options(view, "image_vision", "engine")
+    protocols = _field_options(view, "image_vision", "external.protocol")
+    external["api_key_source"] = "inline" if external.get("api_key_configured") else "none"
+    external["api_key_file_configured"] = bool(str(external.get("api_key_file") or "").strip())
+    return {
+        "vision": {"engine": image.get("engine", "auto"), "local": local, "external": external},
+        "engines": [option["value"] for option in engine_options],
+        "engine_labels": {option["value"]: option["label"] for option in engine_options},
+        "protocols": [option["value"] for option in protocols],
+        "settings_path": view.get("settings_path", ""),
+    }
+
+
 def create_app(config: dict | None = None) -> Flask:
     app = Flask(__name__)
     app.config.from_mapping(
@@ -96,7 +131,11 @@ def create_app(config: dict | None = None) -> Flask:
         app.config.update(config)
 
     runtime_root = Path(app.config["RUNTIME_ROOT"]).expanduser().resolve()
-    store = TaskStore(runtime_root / "tasks")
+    # 可插拔能力声明的步骤位（当前只有图像识别）；核心步骤表在 task_store 里，不含它们。
+    capability_steps = [
+        (spec.key, spec.label, spec.after) for spec in capability_registry.registry.step_specs()
+    ]
+    store = TaskStore(runtime_root / "tasks", capability_steps=capability_steps)
     if app.config["START_BACKGROUND_TASKS"]:
         store.mark_interrupted()
     executor = ThreadPoolExecutor(
@@ -143,6 +182,62 @@ def create_app(config: dict | None = None) -> Flask:
         if app.config["START_BACKGROUND_TASKS"]:
             executor.submit(run_pipeline, store, task["id"], pipeline_config)
         return jsonify({"id": task["id"], "url": f"/app/tasks/{task['id']}"}), 202
+
+    @app.get("/api/settings")
+    def settings_api():
+        """当前生效设置：能力分组 + 声明式 schema；密钥只回「是否配置 + 末 4 位」。"""
+        current = settings_module.effective_settings()
+        view = settings_module.redact_settings(current)
+        return jsonify({**view, **_legacy_settings_view(view)})
+
+    @app.put("/api/settings")
+    def update_settings_api():
+        payload = request.get_json(silent=True) or {}
+        try:
+            updated = settings_module.save_settings(payload)
+        except settings_module.SettingsError as error:
+            return jsonify({"error": str(error)}), 400
+        view = settings_module.redact_settings(updated)
+        return jsonify({**view, **_legacy_settings_view(view)})
+
+    @app.post("/api/settings/test")
+    def test_settings_api():
+        """探测所有已注册能力。
+
+        允许带草稿 payload（页面没保存也能先测），草稿先合并到生效设置上；云端只打
+        各协议的 ``/models``，不消耗业务额度。
+        """
+        payload = request.get_json(silent=True) or {}
+        try:
+            probe_settings = settings_module.effective_settings()
+            if payload:
+                probe_settings = settings_module.deep_merge(
+                    probe_settings,
+                    settings_module.expand_settings(settings_module.validate_settings(payload)),
+                )
+        except settings_module.SettingsError as error:
+            return jsonify({"error": str(error)}), 400
+
+        results: dict[str, Any] = {}
+        for capability in capability_registry.registry.all():
+            section = settings_module.capability_settings(probe_settings, capability.key)
+            availability = capability.availability(section)
+            results[capability.key] = {
+                "label": capability.label,
+                "available": availability.available,
+                **capability.probe(section),
+            }
+        if not any(item.get("available") for item in results.values()):
+            return jsonify(
+                {
+                    "ok": False,
+                    "capabilities": results,
+                    "detail": "没有任何可用能力：本地需 swift，云端需 BaseURL + 模型 + Key。",
+                }
+            ), 400
+        ok = all(item.get("ok", item.get("available", False)) for item in results.values())
+        primary = results.get("image_vision", {})
+        return jsonify({**primary, "ok": ok, "capabilities": results}), (200 if ok else 502)
 
     @app.get("/tasks/<task_id>")
     def task_detail(task_id: str):

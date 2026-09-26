@@ -1,4 +1,11 @@
-import type { TaskDeletionPreview, VideoResult, VideoTask } from "@/types"
+import type {
+  SettingsResponse,
+  SettingsTestResult,
+  SettingsUpdate,
+  TaskDeletionPreview,
+  VideoResult,
+  VideoTask,
+} from "@/types"
 
 async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init)
@@ -41,6 +48,32 @@ export function resumeTask(taskId: string): Promise<{ id: string; resume_from: s
   return requestJson<{ id: string; resume_from: string }>(`/api/tasks/${taskId}/resume`, {
     method: "POST",
   })
+}
+
+export function getSettings(): Promise<SettingsResponse> {
+  return requestJson<SettingsResponse>("/api/settings", { cache: "no-store" })
+}
+
+/** 保存设置。注意：`external.api_key` 传空字符串表示「保持已保存的值不变」。 */
+export function updateSettings(payload: SettingsUpdate): Promise<SettingsResponse> {
+  return requestJson<SettingsResponse>("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+/** 连通性探测：本地看 swift，云端只打 /models，不消耗视觉额度。 */
+export function testSettings(payload: SettingsUpdate): Promise<SettingsTestResult> {
+  return requestJson<SettingsTestResult>("/api/settings/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function settingsHref(): string {
+  return "/app/settings"
 }
 
 export function getTaskDeletionPreview(taskId: string): Promise<TaskDeletionPreview> {

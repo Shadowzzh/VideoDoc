@@ -22,6 +22,8 @@ from urllib.parse import urlparse
 
 import markdown
 
+from . import capabilities as capability_registry
+from . import settings as settings_module
 from .integrations.frames import FramesError, extract_frames
 from .integrations.transcribe import TranscribeError, transcribe
 from .task_store import TaskStore, utc_now
@@ -31,15 +33,14 @@ SRT_TIME_PATTERN = re.compile(
     r"(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})[,.](?P<ms>\d{3})"
 )
 
+# 「图像证据」步骤位：能力自己声明占这个位；产物沿用 ocr/ocr.json 以兼容历史任务。
+IMAGE_EVIDENCE_STEP = "ocr"
+
 
 class PipelineError(RuntimeError):
     """包含适合任务页面展示的流水线错误。"""
 
 
-# 内置的本地 OCR 脚本（macOS Vision）。可用 VIDEODOC_OCR_SCRIPT 覆盖。
-DEFAULT_OCR_SCRIPT = Path(__file__).resolve().parent / "integrations" / "vision_ocr.swift"
-
-# 默认 LLM 端点与模型（OpenAI 兼容接口）。可用 VIDEODOC_LLM_* 覆盖。
 DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
 DEFAULT_LLM_MODEL = "deepseek-v4-flash"
 
@@ -57,7 +58,6 @@ class PipelineConfig:
     max_frames: int = 120
     frame_width: int = 960
     max_ocr_frames: int = 24
-    ocr_script: Path = DEFAULT_OCR_SCRIPT
     llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_model: str = DEFAULT_LLM_MODEL
     llm_timeout_seconds: int = 600
@@ -66,7 +66,6 @@ class PipelineConfig:
     @classmethod
     def from_environment(cls) -> "PipelineConfig":
         yt_dlp_python = os.environ.get("VIDEODOC_YT_DLP_PYTHON")
-        ocr_script = os.environ.get("VIDEODOC_OCR_SCRIPT")
         return cls(
             cookie_browser=os.environ.get("VIDEODOC_COOKIE_BROWSER", "chrome"),
             frame_scene=float(os.environ.get("VIDEODOC_FRAME_SCENE", "0.30")),
@@ -74,9 +73,6 @@ class PipelineConfig:
             max_frames=int(os.environ.get("VIDEODOC_MAX_FRAMES", "120")),
             frame_width=int(os.environ.get("VIDEODOC_FRAME_WIDTH", "960")),
             max_ocr_frames=int(os.environ.get("VIDEODOC_OCR_MAX_FRAMES", "24")),
-            ocr_script=(
-                Path(ocr_script).expanduser() if ocr_script else DEFAULT_OCR_SCRIPT
-            ),
             llm_base_url=os.environ.get("VIDEODOC_LLM_BASE_URL", DEFAULT_LLM_BASE_URL),
             llm_model=os.environ.get("VIDEODOC_LLM_MODEL", DEFAULT_LLM_MODEL),
             llm_timeout_seconds=int(os.environ.get("VIDEODOC_LLM_TIMEOUT", "600")),
@@ -480,11 +476,10 @@ class VideoArticlePipeline:
                     "select_images",
                     lambda: self._select_images(outline, frames),
                 )
-            ocr_images = previous.get("ocr")
-            if ocr_images is None:
-                images = self._step("ocr", lambda: self._ocr_images(images))
+            if previous.get("ocr") is None:
+                images = self._ocr_images(images)
             else:
-                images = ocr_images
+                images = previous["ocr"]
             article = previous.get("article")
             if article is None:
                 article = self._step(
@@ -1178,74 +1173,85 @@ class VideoArticlePipeline:
         self.store.append_log(self.task_id, "select_images", f"为 {len(images)} 个章节选择了关键帧。")
         return images
 
-    def _ocr_images(self, images: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not images:
-            self.store.append_log(self.task_id, "ocr", "没有待 OCR 的章节配图。")
-            return self._persist_ocr_images(images)
-        if shutil.which("swift") is None:
-            self.store.append_log(
-                self.task_id,
-                "ocr",
-                "当前环境缺少 swift，保留图片并跳过 OCR。",
-            )
-            return self._persist_ocr_images(images)
-        script = self.config.ocr_script
-        if not script.is_file():
-            self.store.append_log(
-                self.task_id,
-                "ocr",
-                f"找不到本地 OCR 脚本，保留图片并跳过 OCR: {script}",
-            )
-            return self._persist_ocr_images(images)
-        frame_dir = self.task_dir / "analysis/keyframes/frames"
-        completed: list[dict[str, Any]] = []
-        for image in images:
-            frame_path = frame_dir / image["file"]
-            command = [
-                "swift",
-                str(script),
-                str(frame_path),
-                "--lang",
-                "zh-Hans,en-US",
-                "--level",
-                "accurate",
-                "--positions",
-            ]
-            self.store.append_log(
-                self.task_id,
-                "ocr",
-                f"$ {shlex.join(command)}",
-            )
-            copy = dict(image)
-            try:
-                result = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=120,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired:
-                copy["ocr_error"] = "OCR 超过 120 秒。"
-                completed.append(copy)
-                continue
-            if result.returncode == 0:
-                copy["ocr_text"] = result.stdout.strip()
-                if result.stdout.strip():
-                    self.store.append_log(self.task_id, "ocr", result.stdout.strip())
-            else:
-                copy["ocr_error"] = result.stderr.strip() or f"退出码 {result.returncode}"
-                self.store.append_log(self.task_id, "ocr", f"非阻塞失败: {copy['ocr_error']}")
-            completed.append(copy)
-        return self._persist_ocr_images(completed)
+    def _settings_path(self) -> Path:
+        """页面设置文件位置（``VIDEODOC_SETTINGS_FILE`` 可覆盖）。"""
+        return settings_module.settings_path()
 
-    def _persist_ocr_images(self, images: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        path = self.task_dir / "ocr.json"
+    def _has_step(self, step_key: str) -> bool:
+        return any(step["key"] == step_key for step in self.task.get("steps", []))
+
+    def _note_step(self, step_key: str, **changes: Any) -> None:
+        """更新步骤信息；老任务没有该步骤位（能力已移除）时忽略。"""
+        if not self._has_step(step_key):
+            return
+        self.store.update_step(self.task_id, step_key, **changes)
+
+    def _skip_step(self, step_key: str, reason: str) -> None:
+        """标记步骤为 skipped（能力缺失/不可用），任务继续。"""
+        self._note_step(step_key, status="skipped", finished_at=utc_now(), error=reason)
+
+    def _image_capability(self):
+        """占据图像证据步骤位的能力；未注册时返回 None。"""
+        return capability_registry.registry.by_step(IMAGE_EVIDENCE_STEP)
+
+    def _ocr_images(self, images: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """执行「图像证据」槽位上的能力（可插拔，方法名保留历史以便打桩/覆盖）。
+
+        主流程不认识具体实现：没有注册能力、或能力在当前设置下不可用时，只把该步骤
+        标成 skipped，图片原样保留，任务照常跑完。设置每任务现读，页面改完即时生效。
+        """
+        capability = self._image_capability()
+        if capability is None:
+            self.store.append_log(
+                self.task_id, IMAGE_EVIDENCE_STEP, "未注册图像识别能力，跳过图像取证。"
+            )
+            self._skip_step(IMAGE_EVIDENCE_STEP, "未注册图像识别能力")
+            return self._persist_ocr_images(images)
+
+        current = settings_module.effective_settings(self._settings_path())
+        capability_settings = settings_module.capability_settings(current, capability.key)
+        artifact_key, filename = capability.artifact()
+        self._note_step(IMAGE_EVIDENCE_STEP, command=capability.describe(capability_settings))
+
+        availability = capability.availability(capability_settings)
+        if not availability.available:
+            self.store.append_log(
+                self.task_id, IMAGE_EVIDENCE_STEP, f"跳过图像取证：{availability.reason}"
+            )
+            self._skip_step(IMAGE_EVIDENCE_STEP, availability.reason)
+            return self._persist_ocr_images(
+                images, artifact_key=artifact_key, filename=filename
+            )
+
+        def action() -> list[dict[str, Any]]:
+            evidence = capability.run(
+                capability_settings,
+                list(images),
+                frame_dir=self.task_dir / "analysis/keyframes/frames",
+                log=lambda message: self.store.append_log(
+                    self.task_id, IMAGE_EVIDENCE_STEP, message
+                ),
+                task_dir=self.task_dir,
+            )
+            return self._persist_ocr_images(
+                evidence.images, artifact_key=artifact_key, filename=filename
+            )
+
+        if self._has_step(IMAGE_EVIDENCE_STEP):
+            return self._step(IMAGE_EVIDENCE_STEP, action)
+        return action()
+
+    def _persist_ocr_images(
+        self,
+        images: list[dict[str, Any]],
+        *,
+        artifact_key: str = "ocr",
+        filename: str = "ocr.json",
+    ) -> list[dict[str, Any]]:
+        path = self.task_dir / filename
         write_json_atomic(path, images)
-        self.store.merge_artifacts(self.task_id, {"ocr": "ocr.json"})
-        self.store.update_step(self.task_id, "ocr", outputs=["ocr.json"])
+        self.store.merge_artifacts(self.task_id, {artifact_key: filename})
+        self._note_step(IMAGE_EVIDENCE_STEP, outputs=[filename])
         return images
 
     def _fake_article(
@@ -1427,9 +1433,12 @@ class VideoArticlePipeline:
                 section_segments = segments[start_index : end_index + 1]
                 transcript = transcript_for_prompt(section_segments, max_chars=40_000)
                 image = image_by_section.get(section["id"], {})
+                capability = self._image_capability()
                 image_evidence = {
                     "timestamp": image.get("timestamp", ""),
-                    "ocr_text": image.get("ocr_text", ""),
+                    "image_evidence": (
+                        capability.evidence_text(image) if capability is not None else ""
+                    ),
                 }
                 self.store.append_log(
                     self.task_id,
@@ -1442,8 +1451,10 @@ class VideoArticlePipeline:
                         {
                             "role": "system",
                             "content": (
-                                "你是严谨的中文技术文章作者。只依据当前章节转写、章节大纲和 OCR 证据写作，"
-                                "不得虚构画面或事实。只返回 JSON 对象，不要插入图片，"
+                                "你是严谨的中文技术文章作者。只依据当前章节转写、章节大纲和配图证据写作。"
+                                "image_evidence 是配图的画面证据（本地 OCR 逐行文字和/或视觉模型的画面理解，"
+                                "由具体能力提供）：可用于描述画面，但视觉模型给出的内容不得作为精确数字或文字"
+                                "的唯一依据。不得虚构画面或事实。只返回 JSON 对象，不要插入图片，"
                                 "也不要在 body_markdown 中重复章节标题。"
                             ),
                         },

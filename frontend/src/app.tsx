@@ -1,12 +1,14 @@
 import { ErrorState } from "@/components/error-state"
 import { HomePage } from "@/pages/home-page"
 import { ResultPage } from "@/pages/result-page"
+import { SettingsPage } from "@/pages/settings-page"
 import { TaskPage } from "@/pages/task-page"
 
 type Route =
   | { name: "home" }
   | { name: "task"; taskId: string }
   | { name: "result"; taskId: string }
+  | { name: "settings" }
   | { name: "not-found" }
 
 function currentRoute(): Route {
@@ -22,6 +24,9 @@ function currentRoute(): Route {
   if (taskMatch) {
     return { name: "task", taskId: decodeURIComponent(taskMatch[1]) }
   }
+  if (path === "settings") {
+    return { name: "settings" }
+  }
   return { name: "not-found" }
 }
 
@@ -35,6 +40,9 @@ export function App() {
   }
   if (route.name === "result") {
     return <ResultPage taskId={route.taskId} />
+  }
+  if (route.name === "settings") {
+    return <SettingsPage />
   }
   return <div className="mx-auto max-w-2xl p-8"><ErrorState title="页面不存在" message="请返回 VideoDoc 任务台。" /></div>
 }

@@ -15,7 +15,8 @@ def test_task_store_persists_steps_and_logs(tmp_path):
     assert public["status"] == "running"
     assert public["steps"][0]["outputs"] == ["metadata.json"]
     assert public["steps"][0]["log_tail"] == "metadata ready"
-    assert public["progress"]["percent"] == 10
+    # 步骤数由「核心步骤 + 已注册能力步骤」决定，测试里的 store 未注入能力步骤（9 步）。
+    assert public["progress"]["percent"] == round(1 / len(public["steps"]) * 100)
 
 
 def test_public_task_uses_existing_article_title_for_legacy_task(tmp_path):

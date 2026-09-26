@@ -16,6 +16,8 @@ from typing import Any
 TASK_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-f0-9]{8}$")
 TASK_SCHEMA_VERSION = 3
 
+# 核心流水线步骤。可插拔能力声明的步骤由 TaskStore 按 ``after`` 锚点插到对应位置：
+# 这里没有图像识别，因此**移除该能力后核心流水线照样跑完**。
 STEP_DEFINITIONS = (
     ("probe", "解析来源与元数据"),
     ("download", "下载并合并视频"),
@@ -24,7 +26,6 @@ STEP_DEFINITIONS = (
     ("outline", "DeepSeek 生成文章大纲"),
     ("frames", "常规模式提取关键帧"),
     ("select_images", "按章节选择文章配图"),
-    ("ocr", "本地 OCR 取证"),
     ("article", "DeepSeek 生成图文正文"),
     ("finalize", "整理交互式文章产物"),
 )
@@ -45,11 +46,28 @@ def utc_now() -> str:
 class TaskStore:
     """将每个任务保存在独立目录中，适合单用户本地运行。"""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, capability_steps=()):
+        """``capability_steps`` 是 ``(key, label, after_key)`` 三元组：可插拔能力声明的步骤位。"""
         self.root = root.resolve()
+        self.capability_steps = tuple(capability_steps)
         self.trash_root = self.root.parent / "trash"
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+
+    def _step_layout(self) -> list[tuple[str, str]]:
+        """核心步骤 + 能力步骤，按 ``after`` 锚点插入。"""
+        layout: list[tuple[str, str]] = []
+        pending = list(self.capability_steps)
+        for key, label in STEP_DEFINITIONS:
+            layout.append((key, label))
+            for cap_key, cap_label, after in list(pending):
+                if after == key:
+                    layout.append((cap_key, cap_label))
+                    pending.remove((cap_key, cap_label, after))
+        # 锚点不存在的能力步骤放到末尾，不让它静默消失。
+        for cap_key, cap_label, _ in pending:
+            layout.append((cap_key, cap_label))
+        return layout
 
     def task_dir(self, task_id: str) -> Path:
         if not TASK_ID_PATTERN.fullmatch(task_id):
@@ -87,7 +105,7 @@ class TaskStore:
                     "attempt_count": 0,
                     "attempts": [],
                 }
-                for key, label in STEP_DEFINITIONS
+                for key, label in self._step_layout()
             ],
         }
         with self._lock:
@@ -293,8 +311,10 @@ class TaskStore:
             self._append_text(path, text)
             if attempt_number is None:
                 task = self.get(task_id)
-                step = self._find_step(task, step_key)
-                if step["attempts"] and step["attempts"][-1]["status"] == "running":
+                # 步骤位可能不存在：该能力已被移除，或老任务没有这个槽位。
+                # 这种情况只写日志文件、不做尝试级回写，不能因此抛错把任务搞挂。
+                step = next((item for item in task["steps"] if item["key"] == step_key), None)
+                if step and step["attempts"] and step["attempts"][-1]["status"] == "running":
                     attempt_number = int(step["attempts"][-1]["number"])
             if attempt_number is not None:
                 attempt_path = (

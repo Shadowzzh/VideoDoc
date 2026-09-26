@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from videodoc.integrations import vision_local, vision_remote
 from videodoc.server import create_app
 
 
@@ -221,3 +222,98 @@ def test_download_route_only_allows_delivery_artifacts(app, client):
     response = client.get(f"/tasks/{task['id']}/download/task.json")
 
     assert response.status_code == 404
+
+
+def test_settings_api_returns_effective_settings_without_secrets(app, client, tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(tmp_path / "settings.json"))
+
+    response = client.get("/api/settings")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["vision"]["engine"] in payload["engines"]
+    assert "api_key" not in payload["vision"]["external"]
+    assert payload["protocols"][0] == "openai-chat"
+    assert payload["settings_path"].endswith("settings.json")
+
+
+def test_settings_api_saves_plaintext_key_but_never_echoes_it(app, client, tmp_path, monkeypatch):
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(settings_file))
+    monkeypatch.delenv("VIDEODOC_VISION_API_KEY", raising=False)
+
+    response = client.put(
+        "/api/settings",
+        json={
+            "capabilities": {
+                "image_vision": {
+                    "engine": "external",
+                    "external.protocol": "openai-responses",
+                    "external.base_url": "http://192.168.8.211:3006/v1",
+                    "external.model": "gemini-3.5-flash-lite",
+                    "external.api_key": "plain-secret-abcd",
+                }
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    external = response.get_json()["vision"]["external"]
+    assert external["api_key_configured"] is True
+    assert external["api_key_hint"] == "****abcd"
+    assert "plain-secret-abcd" not in json.dumps(response.get_json())
+    saved = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert saved["capabilities"]["image_vision"]["external.api_key"] == "plain-secret-abcd"
+    assert client.get("/api/settings").get_json()["vision"]["engine"] == "external"
+
+
+def test_settings_api_rejects_invalid_payload(app, client, tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(tmp_path / "settings.json"))
+
+    response = client.put("/api/settings", json={"vision": {"engine": "cloud"}})
+
+    assert response.status_code == 400
+    assert "通道 只能是" in response.get_json()["error"]
+
+
+def test_settings_test_endpoint_probes_the_draft_payload(app, client, tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(tmp_path / "settings.json"))
+    seen = {}
+
+    def fake_probe(config):
+        seen["protocol"] = config.protocol
+        seen["base_url"] = config.base_url
+        return {"ok": True, "endpoint": "http://h/v1/models", "detail": "可达"}
+
+    monkeypatch.setattr(vision_remote, "probe", fake_probe)
+
+    response = client.post(
+        "/api/settings/test",
+        json={
+            "vision": {
+                "engine": "external",
+                "external": {
+                    "protocol": "openai-chat",
+                    "base_url": "http://h/v1",
+                    "model": "m",
+                    "api_key": "k-1234",
+                },
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["external"]["ok"] is True
+    assert seen == {"protocol": "openai-chat", "base_url": "http://h/v1"}
+
+
+def test_settings_test_endpoint_reports_missing_channel(app, client, tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(vision_local.shutil, "which", lambda name: None)
+
+    response = client.post("/api/settings/test", json={"vision": {"engine": "local"}})
+
+    assert response.status_code == 400
+    assert response.get_json()["ok"] is False

@@ -701,8 +701,9 @@ def test_resume_from_article_reuses_all_upstream_outputs(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     store.merge_artifacts(task["id"], artifacts)
-    for step in store.get(task["id"])["steps"][:8]:
-        store.update_step(task["id"], step["key"], status="completed")
+    for step in store.get(task["id"])["steps"]:
+        if step["key"] not in {"article", "finalize"}:
+            store.update_step(task["id"], step["key"], status="completed")
     store.update_step(task["id"], "article", status="failed", error="invalid json")
     store.update(task["id"], status="failed", error="invalid json")
     executed: list[str] = []
@@ -739,8 +740,13 @@ def test_resume_from_article_reuses_all_upstream_outputs(tmp_path):
     pipeline.run(start_at="article")
 
     saved = store.get(task["id"])
-    assert saved["status"] == "completed"
+    assert saved["status"] == "completed", saved.get("error")
     assert executed == ["article", "finalize"]
-    assert all(step["attempt_count"] == 0 for step in saved["steps"][:8])
-    assert saved["steps"][8]["attempt_count"] == 1
-    assert saved["steps"][9]["attempt_count"] == 1
+    by_key = {step["key"]: step for step in saved["steps"]}
+    assert all(
+        step["attempt_count"] == 0
+        for key, step in by_key.items()
+        if key not in {"article", "finalize"}
+    )
+    assert by_key["article"]["attempt_count"] == 1
+    assert by_key["finalize"]["attempt_count"] == 1

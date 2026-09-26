@@ -1,0 +1,38 @@
+# VideoDoc 一键部署示例：把「填 BaseURL + Key」之外的一切都交给容器
+#
+#   cp .env.docker.example .env   # 或用下面的 environment 直接填
+#   docker compose up -d --build
+#   打开 http://127.0.0.1:8765/app/  （或在设置页里配图像识别）
+#
+# 说明：
+#   - 不需要在本机装 Python / Node / pnpm / ffmpeg；
+#   - 数据（任务产物 + 自动下载的 whisper 模型）落在命名卷 videodoc-data；
+#   - 图像识别只配 BaseURL + Key 即可（协议默认 openai-chat，覆盖绝大多数兼容端点）；
+#     本地 macOS Vision 通道在容器里不可用（没有 swift），会自动降级到云端。
+services:
+  videodoc:
+    build: .
+    image: videodoc:local
+    container_name: videodoc
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      # ---- 图像识别（云端通道）----
+      VIDEODOC_VISION_PROTOCOL: ${VIDEODOC_VISION_PROTOCOL:-openai-chat}
+      VIDEODOC_VISION_BASE_URL: ${VIDEODOC_VISION_BASE_URL:?请填图像识别 BaseURL，例如 https://api.openai.com/v1}
+      VIDEODOC_VISION_MODEL: ${VIDEODOC_VISION_MODEL:?请填图像识别模型，例如 gpt-4o-mini}
+      VIDEODOC_VISION_API_KEY: ${VIDEODOC_VISION_API_KEY:?请填图像识别 API Key}
+      VIDEODOC_VISION_MAX_FRAMES: ${VIDEODOC_VISION_MAX_FRAMES:-12}
+      VIDEODOC_VISION_DAILY_BUDGET: ${VIDEODOC_VISION_DAILY_BUDGET:-200}
+      # ---- 写文章用的 LLM（同样可换任意 OpenAI 兼容端点）----
+      VIDEODOC_LLM_BASE_URL: ${VIDEODOC_LLM_BASE_URL:-https://api.deepseek.com}
+      VIDEODOC_LLM_MODEL: ${VIDEODOC_LLM_MODEL:-deepseek-v4-flash}
+      VIDEODOC_LLM_API_KEY: ${VIDEODOC_LLM_API_KEY:?请填 LLM API Key}
+      # ---- 容器里没有浏览器可读 cookie，默认关闭 ----
+      VIDEODOC_COOKIE_BROWSER: ${VIDEODOC_COOKIE_BROWSER:-}
+    volumes:
+      - videodoc-data:/data
+
+volumes:
+  videodoc-data:
