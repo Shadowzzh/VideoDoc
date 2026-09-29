@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { App } from "@/app"
@@ -32,8 +32,30 @@ const result = {
 }
 
 afterEach(() => {
+  cleanup()
   vi.restoreAllMocks()
 })
+
+const scrollResult = {
+  ...result,
+  article_title: "滚动联动文章",
+  outline: {
+    ...result.outline,
+    sections: [
+      result.outline.sections[0],
+      {
+        ...result.outline.sections[0],
+        id: "section-02",
+        title: "第二章",
+        start_sec: 10,
+        end_sec: 20,
+        start_time: "00:10",
+        end_time: "00:20",
+      },
+    ],
+  },
+  article_html: "<h1>生成文章</h1><h2>开场章节</h2><p>一段</p><h2>第二章</h2><p>二段</p>",
+}
 
 describe("VideoDoc app", () => {
   it("renders the text-first result workspace", async () => {
@@ -101,6 +123,72 @@ describe("VideoDoc app", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "隐藏视频" }))
     expect(screen.getByText("显示视频")).toBeInTheDocument()
+  })
+
+  it("highlights the outline entry matching the article scroll position without touching the video", async () => {
+    window.history.pushState({}, "", "/app/tasks/task-2/result")
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const payload = url === "/api/tasks" ? [] : scrollResult
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    }))
+
+    render(<TooltipProvider><App /></TooltipProvider>)
+    await screen.findByText("生成文章")
+
+    const article = document.querySelector("article")
+    const viewport = article?.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null
+    expect(article).not.toBeNull()
+    expect(viewport).not.toBeNull()
+
+    const headings = Array.from(article!.querySelectorAll("h2"))
+    const rect = (top: number) => ({
+      top,
+      bottom: top + 40,
+      left: 0,
+      right: 0,
+      width: 0,
+      height: 40,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect
+    let secondTop = 300
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (this === viewport) {
+        return rect(0)
+      }
+      if (this === headings[0]) {
+        return rect(-200)
+      }
+      if (this === headings[1]) {
+        return rect(secondTop)
+      }
+      return rect(0)
+    })
+    Object.defineProperty(viewport!, "clientHeight", { configurable: true, value: 800 })
+    Object.defineProperty(viewport!, "scrollHeight", { configurable: true, value: 4000 })
+    Object.defineProperty(viewport!, "scrollTop", { configurable: true, value: 200 })
+
+    const firstEntry = screen.getByRole("button", { name: /01.*开场章节/ })
+    const secondEntry = screen.getByRole("button", { name: /02.*00:10.*第二章/ })
+
+    fireEvent.scroll(viewport!)
+    await waitFor(() => expect(firstEntry).toHaveClass("bg-sidebar-accent"))
+    expect(secondEntry).not.toHaveClass("bg-sidebar-accent")
+
+    secondTop = 60
+    fireEvent.scroll(viewport!)
+    await waitFor(() => expect(secondEntry).toHaveClass("bg-sidebar-accent"))
+    expect(firstEntry).not.toHaveClass("bg-sidebar-accent")
+
+    // 视频浮窗仍由播放进度驱动，不受文章滚动影响。
+    const assistant = document.querySelector('[aria-label="视频浮窗"]')
+    expect(assistant).not.toBeNull()
+    expect(within(assistant as HTMLElement).getByText("开场章节")).toBeInTheDocument()
   })
 
   it("resumes a failed task from its current stage", async () => {

@@ -28,6 +28,7 @@ import { useMediaQuery } from "@/hooks/use-media-query"
 import { useResult } from "@/hooks/use-result"
 import { mediaHref, taskHref } from "@/lib/api"
 import { formatSeconds, resultTitle } from "@/lib/format"
+import { matchSectionAnchors, pickActiveSectionId } from "@/lib/outline-anchors"
 import type { OutlineSection, VideoResult } from "@/types"
 
 export function ResultPage({ taskId }: { taskId: string }) {
@@ -40,11 +41,14 @@ export function ResultPage({ taskId }: { taskId: string }) {
   const [currentTime, setCurrentTime] = useState(0)
   const [activeView, setActiveView] = useState<"article" | "transcript">("article")
   const [articleScrollRequest, setArticleScrollRequest] = useState(0)
+  const [readingSectionId, setReadingSectionId] = useState<string | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const articleRef = useRef<HTMLElement | null>(null)
   const pendingArticleSectionRef = useRef<string | null>(null)
 
-  const currentSection = findCurrentSection(result?.outline.sections || [], currentTime)
+  const playbackSection = findCurrentSection(result?.outline.sections || [], currentTime)
+  // 文章视图的大纲高亮跟随阅读位置；视频浮窗和转写视图继续跟随播放进度。
+  const outlineSectionId = activeView === "article" ? readingSectionId : playbackSection?.id ?? null
 
   useEffect(() => {
     const video = videoRef.current
@@ -189,21 +193,66 @@ export function ResultPage({ taskId }: { taskId: string }) {
     if (!sectionId) {
       return
     }
-    const sectionIndex = result.outline.sections.findIndex((section) => section.id === sectionId)
-    if (sectionIndex < 0) {
+    const article = articleRef.current
+    if (!article) {
       return
     }
-    const headings = articleRef.current?.querySelectorAll("h2")
-    const heading = headings?.item(sectionIndex)
-    if (!heading) {
+    const anchor = matchSectionAnchors(article, result.outline.sections).find((item) => item.id === sectionId)
+    if (!anchor) {
       return
     }
     const anchorId = `article-${sectionId}`
-    heading.id = anchorId
-    heading.scrollIntoView({ behavior: "smooth", block: "start" })
+    anchor.element.id = anchorId
+    anchor.element.scrollIntoView({ behavior: "smooth", block: "start" })
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${anchorId}`)
     pendingArticleSectionRef.current = null
   }, [activeView, articleScrollRequest, result])
+
+  // 文章滚动时的 scroll spy：把视口顶部所在的章节回写到左侧大纲。
+  useEffect(() => {
+    if (!result || activeView !== "article") {
+      return
+    }
+    const article = articleRef.current
+    if (!article) {
+      return
+    }
+    const viewport = article.closest<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    if (!viewport) {
+      return
+    }
+    const anchors = matchSectionAnchors(article, result.outline.sections)
+    if (anchors.length === 0) {
+      return
+    }
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      const viewportTop = viewport.getBoundingClientRect().top
+      const line = Math.min(Math.max(viewport.clientHeight * 0.25, 120), 200)
+      const scrollable = viewport.scrollHeight - viewport.clientHeight > 4
+      const atBottom = scrollable && viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 4
+      const positions = anchors.map((anchor) => ({ id: anchor.id, top: anchor.element.getBoundingClientRect().top }))
+      setReadingSectionId(pickActiveSectionId(positions, { viewportTop, line, atBottom }))
+    }
+    const schedule = () => {
+      if (frame === 0) {
+        frame = window.requestAnimationFrame(measure)
+      }
+    }
+    measure()
+    const settle = window.setTimeout(measure, 500)
+    viewport.addEventListener("scroll", schedule, { passive: true })
+    window.addEventListener("resize", schedule)
+    return () => {
+      window.clearTimeout(settle)
+      viewport.removeEventListener("scroll", schedule)
+      window.removeEventListener("resize", schedule)
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame)
+      }
+    }
+  }, [activeView, result])
 
   useLayoutEffect(() => {
     if (desktop && videoVisible && videoExpanded) {
@@ -241,7 +290,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
       renderSidebar={(onNavigate) => (
         <ResultOutlineSidebar
           result={result}
-          currentSection={currentSection}
+          activeSectionId={outlineSectionId}
           onSelect={selectOutlineSection}
           onNavigate={onNavigate}
         />
@@ -274,7 +323,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
           <FloatingVideoAssistant
             taskId={taskId}
             result={result}
-            currentSection={currentSection}
+            currentSection={playbackSection}
             videoRef={videoRef}
             visible={videoVisible}
             expanded={videoExpanded}
@@ -288,7 +337,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
               <MobileVideoAssistant
                 taskId={taskId}
                 result={result}
-                currentSection={currentSection}
+                currentSection={playbackSection}
                 videoRef={videoRef}
               />
             </SheetContent>
@@ -413,7 +462,7 @@ function ReadingWorkspace({
           <ScrollArea className="h-full"><article ref={articleRef} className="article-content px-5 pb-72 pt-8 md:px-10 md:pb-72 md:pt-12" onClick={onArticleClick} dangerouslySetInnerHTML={{ __html: result.article_html }} /></ScrollArea>
         </TabsContent>
         <TabsContent value="transcript" className="min-h-0 flex-1 overflow-hidden">
-          <ScrollArea className="h-full"><div className="mx-auto max-w-4xl space-y-1 px-5 py-8 md:px-10">{result.segments.map((segment) => <button key={segment.id} type="button" onClick={() => onSeek(segment.start_sec)} className="grid w-full grid-cols-[4rem_1fr] gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-accent"><span className="font-mono text-xs text-muted-foreground">{formatSeconds(segment.start_sec)}</span><span className="text-sm leading-6">{segment.text}</span></button>)}</div></ScrollArea>
+          <ScrollArea className="h-full"><div className="max-w-4xl space-y-1 px-5 py-8 md:px-10">{result.segments.map((segment) => <button key={segment.id} type="button" onClick={() => onSeek(segment.start_sec)} className="grid w-full grid-cols-[4rem_1fr] gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-accent"><span className="font-mono text-xs text-muted-foreground">{formatSeconds(segment.start_sec)}</span><span className="text-sm leading-6">{segment.text}</span></button>)}</div></ScrollArea>
         </TabsContent>
       </Tabs>
     </div>
@@ -422,12 +471,12 @@ function ReadingWorkspace({
 
 function ResultOutlineSidebar({
   result,
-  currentSection,
+  activeSectionId,
   onSelect,
   onNavigate,
 }: {
   result: VideoResult
-  currentSection: OutlineSection | null
+  activeSectionId: string | null
   onSelect: (section: OutlineSection) => void
   onNavigate?: () => void
 }) {
@@ -450,7 +499,7 @@ function ResultOutlineSidebar({
         <div className="space-y-1">
           {result.outline.sections.map((section, index) => {
             let className = "w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-sidebar-accent"
-            if (currentSection?.id === section.id) {
+            if (activeSectionId === section.id) {
               className += " bg-sidebar-accent text-sidebar-accent-foreground"
             }
             return (
