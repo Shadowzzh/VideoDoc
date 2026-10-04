@@ -1,6 +1,8 @@
 import json
 import io
+import subprocess
 import sys
+import time
 import urllib.error
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from videodoc.pipeline import (
     parse_srt,
     strip_leading_markdown_heading,
     transcript_for_prompt,
+    video_profile,
 )
 from videodoc.task_store import TaskStore
 
@@ -446,7 +449,7 @@ def test_generate_article_calls_llm_once_per_section(tmp_path, monkeypatch):
     calls = []
 
     class SectionPipeline(VideoArticlePipeline):
-        def _call_llm(self, step, messages, response_name=None):
+        def _call_llm(self, step, messages, response_name=None, label=None):
             calls.append(response_name)
             section_id = f"section-{len(calls):02d}"
             return {"id": section_id, "body_markdown": f"## 重复标题\n\n正文 {section_id}"}
@@ -482,7 +485,10 @@ def test_call_llm_retries_once_on_transient_error(tmp_path, monkeypatch):
         if calls["n"] == 1:
             raise urllib.error.URLError("UNEXPECTED_EOF_WHILE_READING")
         response_body = json.dumps(
-            {"choices": [{"message": {"content": '{"ok": true}'}}]},
+            {
+                "choices": [{"message": {"content": '{"ok": true}'}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            },
             ensure_ascii=False,
         ).encode("utf-8")
 
@@ -506,6 +512,16 @@ def test_call_llm_retries_once_on_transient_error(tmp_path, monkeypatch):
     assert result == {"ok": True}
     assert calls["n"] == 2  # 第一次失败 + 重试一次成功
     assert sleeps == [3]  # 3 秒后重试
+
+    # 耗时要能区分「等模型」和「重试前 sleep」：后者是网络问题，不是模型慢。
+    events = [item for item in store.read_metrics(task["id"]) if item["kind"] == "llm"]
+    assert len(events) == 1
+    assert events[0]["retries"] == 1
+    assert events[0]["backoff_ms"] == 3000
+    assert events[0]["attempts"] == 2
+    assert events[0]["total_tokens"] == 15
+    # 假 urlopen 是瞬时的，call_ms 可能为 0，所以不断言 tok/s 的具体值。
+    assert events[0]["call_ms"] is not None
 
 
 def test_call_llm_gives_up_after_retries(tmp_path, monkeypatch):
@@ -616,7 +632,7 @@ def test_article_retry_reuses_completed_section_checkpoint(tmp_path, monkeypatch
     fail_second_section = True
 
     class CheckpointPipeline(VideoArticlePipeline):
-        def _call_llm(self, step, messages, response_name=None):
+        def _call_llm(self, step, messages, response_name=None, label=None):
             nonlocal fail_second_section
             calls.append(response_name)
             section_id = str(response_name).removeprefix("article-").removesuffix("-response")
@@ -750,3 +766,83 @@ def test_resume_from_article_reuses_all_upstream_outputs(tmp_path):
     )
     assert by_key["article"]["attempt_count"] == 1
     assert by_key["finalize"]["attempt_count"] == 1
+
+
+def test_video_profile_prefers_largest_format_when_top_level_is_missing():
+    """多格式站点把分辨率放在 formats[] 里；取错一条就会得出错误的性能结论。"""
+    source = {
+        "filesize_approx": 1000,
+        "formats": [
+            {"width": 640, "height": 360, "vcodec": "avc1", "fps": 30},
+            {"width": 3024, "height": 1898, "vcodec": "av01", "fps": 120},
+        ],
+    }
+
+    profile = video_profile(source)
+
+    assert profile["width"] == 3024
+    assert profile["height"] == 1898
+    assert profile["codec"] == "av01"
+    assert profile["fps"] == 120
+
+
+def test_video_profile_tolerates_missing_fields():
+    profile = video_profile({"title": "无规格"})
+
+    assert profile["width"] is None
+    assert profile["fps"] is None
+    assert profile["codec"] is None
+
+
+def test_run_command_records_duration_and_line_offsets(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    pipeline = VideoArticlePipeline(store, task["id"], PipelineConfig())
+    store.start_attempt(task["id"], "probe")
+
+    pipeline._run_command("probe", ["/bin/echo", "hello"])
+
+    step = store.public(task["id"], include_logs=True)["steps"][0]
+    metric = step["metrics"]["command"][0]
+    assert metric["program"] == "echo"
+    assert metric["exit_code"] == 0
+    assert metric["duration_ms"] >= 0
+
+    log = (store.task_dir(task["id"]) / "logs" / "probe" / "attempt-001.log").read_text(
+        encoding="utf-8"
+    )
+    assert "[+" in log
+    assert "hello" in log
+
+
+def test_run_command_failure_still_records_metric(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    pipeline = VideoArticlePipeline(store, task["id"], PipelineConfig())
+    store.start_attempt(task["id"], "probe")
+
+    with pytest.raises(PipelineError, match="退出码"):
+        pipeline._run_command("probe", ["/bin/sh", "-c", "exit 3"])
+
+    metrics = store.public(task["id"])["steps"][0]["metrics"]["command"]
+    assert metrics[0]["exit_code"] == 3
+
+
+def test_long_command_emits_heartbeats(tmp_path):
+    """长命令不产出文件也不打日志时，心跳是判断「还在跑」的唯一信号。"""
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    pipeline = VideoArticlePipeline(store, task["id"], PipelineConfig())
+    process = subprocess.Popen(["/bin/sleep", "1"])
+    stop = pipeline._start_heartbeat("frames", process, time.monotonic(), interval=0.1)
+    try:
+        time.sleep(0.35)
+    finally:
+        stop.set()
+        process.wait()
+
+    events = [item for item in store.read_metrics(task["id"]) if item["kind"] == "heartbeat"]
+    assert events
+    assert events[0]["step"] == "frames"
+    assert events[0]["pid"] == process.pid
+    assert events[0]["elapsed_ms"] >= 0

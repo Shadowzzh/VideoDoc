@@ -161,6 +161,21 @@ def test_transcribe_uses_pywhispercpp_and_writes_artifacts(
     assert recorded["transcribe"]["language"] == "zh"
 
 
+def test_transcribe_reports_load_and_inference_timing(
+    tmp_path: Path, audio: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模型加载是固定成本，必须与推理分开，否则短视频的 RTF 会完全失真。"""
+    fake_pywhispercpp(monkeypatch, [SimpleNamespace(t0=0, t1=100, text="x")])
+    timing: dict = {}
+
+    transcribe(audio, tmp_path / "transcript", timing=timing)
+
+    assert isinstance(timing["load_ms"], int)
+    assert isinstance(timing["inference_ms"], int)
+    assert timing["load_ms"] >= 0
+    assert timing["inference_ms"] >= 0
+
+
 def test_transcribe_omits_language_when_auto(
     tmp_path: Path, audio: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

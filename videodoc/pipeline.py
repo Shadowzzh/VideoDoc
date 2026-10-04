@@ -10,8 +10,10 @@ import os
 import re
 import shlex
 import shutil
+import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -80,6 +82,39 @@ class PipelineConfig:
                 Path(yt_dlp_python).expanduser() if yt_dlp_python else None
             ),
         )
+
+
+def video_profile(source: dict[str, Any]) -> dict[str, Any]:
+    """从 yt-dlp 的 info 里抽出影响耗时的输入画像。
+
+    抽帧耗时主要由「像素吞吐」决定：分辨率 × 帧率 × 解码复杂度（codec）。
+    只看视频时长会得出错误结论 —— 实测 120fps / 3024×1898 的 13 分钟视频，
+    比 30fps / 1080p 的 29 分钟视频慢一倍。
+    """
+    formats = source.get("formats") or []
+    primary: dict[str, Any] = source
+    if not primary.get("width") and formats:
+        # 多格式站点（如 YouTube）把分辨率放在 formats[] 里，取像素面积最大的一条。
+        candidates = [
+            item
+            for item in formats
+            if isinstance(item, dict) and item.get("width")
+        ]
+        if candidates:
+            primary = max(
+                candidates,
+                key=lambda item: (item.get("width") or 0) * (item.get("height") or 0),
+            )
+    bitrate = primary.get("tbr")
+    return {
+        "codec": primary.get("vcodec") or source.get("vcodec"),
+        "audio_codec": primary.get("acodec") or source.get("acodec"),
+        "width": primary.get("width") or source.get("width"),
+        "height": primary.get("height") or source.get("height"),
+        "fps": primary.get("fps") or source.get("fps"),
+        "bitrate_kbps": round(bitrate, 1) if isinstance(bitrate, (int, float)) else None,
+        "filesize": source.get("filesize") or source.get("filesize_approx"),
+    }
 
 
 def parse_srt_timestamp(value: str) -> float:
@@ -707,6 +742,75 @@ class VideoArticlePipeline:
         self.store.update_step(self.task_id, step, command=shlex.join(command))
         self.store.append_log(self.task_id, step, f"$ {shlex.join(command)}")
 
+    def _start_heartbeat(
+        self,
+        step: str,
+        process: subprocess.Popen,
+        started: float,
+        interval: float = 15.0,
+    ) -> threading.Event:
+        """每 ``interval`` 秒往 metrics.jsonl 追加一条心跳，证明子进程还活着。
+
+        抽帧的全片扫描可以跑十几分钟，期间既不写产物也不打印日志；没有心跳就无法
+        区分「还在算」和「已经卡死」。心跳只写 jsonl，不重写 task.json，所以高频
+        追加也不会放大状态文件的写放大。
+        """
+        stop = threading.Event()
+
+        def beat() -> None:
+            while not stop.wait(interval):
+                if process.poll() is not None:
+                    return
+                self.store.append_metric(
+                    self.task_id,
+                    {
+                        "kind": "heartbeat",
+                        "step": step,
+                        "pid": process.pid,
+                        "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    },
+                )
+
+        threading.Thread(
+            target=beat,
+            name=f"videodoc-heartbeat-{step}",
+            daemon=True,
+        ).start()
+        return stop
+
+    @staticmethod
+    def _command_label(command: list[str]) -> str:
+        """把命令压成可读标签：``python -m claude_real_video`` / ``ffmpeg`` 这种。"""
+        if not command:
+            return ""
+        name = Path(command[0]).name
+        if name.startswith("python") and "-m" in command:
+            index = command.index("-m")
+            if index + 1 < len(command):
+                return f"{name} -m {command[index + 1]}"
+        return name
+
+    def _record_command_metric(
+        self,
+        step: str,
+        command: list[str],
+        started: float,
+        started_at: str,
+        return_code: int | None,
+    ) -> None:
+        self.store.record_metric(
+            self.task_id,
+            step,
+            {
+                "kind": "command",
+                "program": self._command_label(command),
+                "arguments": max(0, len(command) - 1),
+                "started_at": started_at,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "exit_code": return_code,
+            },
+        )
+
     def _run_command(
         self,
         step: str,
@@ -717,6 +821,8 @@ class VideoArticlePipeline:
         env: dict[str, str] | None = None,
     ) -> str:
         self._set_command(step, command)
+        started = time.monotonic()
+        started_at = utc_now()
         process = subprocess.Popen(
             command,
             cwd=cwd,
@@ -727,22 +833,40 @@ class VideoArticlePipeline:
             errors="replace",
             env=env if env is not None else os.environ.copy(),
         )
-        if capture:
-            stdout, stderr = process.communicate()
-            if stderr:
-                self.store.append_log(self.task_id, step, stderr)
-            if process.returncode != 0:
-                raise PipelineError(f"命令退出码 {process.returncode}: {shlex.join(command)}")
-            return stdout
-        assert process.stdout is not None
-        output: list[str] = []
-        for line in process.stdout:
-            output.append(line)
-            self.store.append_log(self.task_id, step, line.rstrip("\n"))
-        return_code = process.wait()
+        heartbeat_stop = self._start_heartbeat(step, process, started)
+        return_code: int | None = None
+        output = ""
+        try:
+            if capture:
+                stdout, stderr = process.communicate()
+                if stderr:
+                    self.store.append_log(self.task_id, step, stderr)
+                return_code = process.returncode
+                output = stdout
+            else:
+                assert process.stdout is not None
+                lines: list[str] = []
+                for line in process.stdout:
+                    lines.append(line)
+                    # 逐行前缀耗时：外部工具（yt-dlp / claude_real_video）只在关键
+                    # 节点打印，加了偏移量才知道每个节点落在阶段的哪个位置。
+                    text = line.rstrip()
+                    if not text:
+                        continue
+                    elapsed = time.monotonic() - started
+                    self.store.append_log(
+                        self.task_id,
+                        step,
+                        f"[+{elapsed:7.1f}s] {text}",
+                    )
+                return_code = process.wait()
+                output = "".join(lines)
+        finally:
+            heartbeat_stop.set()
+            self._record_command_metric(step, command, started, started_at, return_code)
         if return_code != 0:
             raise PipelineError(f"命令退出码 {return_code}: {shlex.join(command)}")
-        return "".join(output)
+        return output
 
     def _yt_dlp_prefix(self, use_cookies: bool = True) -> list[str]:
         command = self._yt_dlp_command() + ["--no-playlist"]
@@ -833,6 +957,8 @@ class VideoArticlePipeline:
             "webpage_url": source.get("webpage_url") or self.task["url"],
             "extractor": source.get("extractor_key") or source.get("extractor") or "unknown",
             "thumbnail": source.get("thumbnail"),
+            # 输入画像：分析阶段耗时必需，让「同一步骤为何时快时慢」可解释。
+            "video": video_profile(source),
         }
         path = self.task_dir / "metadata.json"
         write_json_atomic(path, metadata)
@@ -866,6 +992,7 @@ class VideoArticlePipeline:
         source_info = self.task_dir / "private" / "source.info.json"
         if not source_info.is_file():
             raise PipelineError("缺少 probe 阶段生成的 source.info.json。")
+        download_started = time.monotonic()
         try:
             output = self._run_command(
                 "download",
@@ -907,7 +1034,23 @@ class VideoArticlePipeline:
         relative = video_path.relative_to(self.task_dir).as_posix()
         self.store.merge_artifacts(self.task_id, {"video": relative})
         self.store.update_step(self.task_id, "download", outputs=[relative])
+        self._record_download_metrics(video_path, time.monotonic() - download_started)
         return video_path
+
+    def _record_download_metrics(self, video_path: Path, elapsed: float) -> None:
+        """记录下载后处理吞吐：同一阶段里「网络下载」和「remux 合并」是两件事。"""
+        try:
+            size = video_path.stat().st_size
+        except OSError:
+            return
+        elapsed = max(0.001, elapsed)
+        self.store.record_derived(
+            self.task_id,
+            "download",
+            bytes=size,
+            seconds=round(elapsed, 1),
+            megabytes_per_second=round(size / elapsed / 1024 / 1024, 2),
+        )
 
     def _extract_audio(self, video_path: Path) -> Path:
         if shutil.which("ffmpeg") is None:
@@ -943,6 +1086,8 @@ class VideoArticlePipeline:
     def _transcribe(self, audio_path: Path) -> list[dict[str, Any]]:
         transcript_dir = self.task_dir / "transcript"
         transcript_dir.mkdir(parents=True, exist_ok=True)
+        transcribe_started = time.monotonic()
+        timing: dict[str, Any] = {}
         try:
             segments = transcribe(
                 audio_path,
@@ -951,6 +1096,7 @@ class VideoArticlePipeline:
                     "transcribe", command, env=env
                 ),
                 log=lambda line: self.store.append_log(self.task_id, "transcribe", line),
+                timing=timing,
             )
         except TranscribeError as error:
             raise PipelineError(str(error)) from error
@@ -967,7 +1113,47 @@ class VideoArticlePipeline:
         self.store.merge_artifacts(self.task_id, artifacts)
         self.store.update_step(self.task_id, "transcribe", outputs=list(artifacts.values()))
         self.store.append_log(self.task_id, "transcribe", f"解析到 {len(segments)} 个时间片段。")
+        self._record_transcribe_metrics(segments, time.monotonic() - transcribe_started, timing)
         return segments
+
+    def _record_transcribe_metrics(
+        self,
+        segments: list[dict[str, Any]],
+        elapsed: float,
+        timing: dict[str, Any] | None = None,
+    ) -> None:
+        """记录转写实时倍率（RTF）与耗时构成。
+
+        ``realtime_factor`` = 音频秒数 / 处理秒数（含模型加载），越高越快。
+        模型加载是固定成本（large-v3-turbo 约 1.6GB），对短视频会让 RTF 严重偏低，
+        所以额外给出 ``inference_realtime_factor``：只用推理耗时算，才是模型本身
+        快不快的真实口径。
+        """
+        elapsed = max(0.001, elapsed)
+        timing = timing or {}
+        audio_seconds = None
+        if segments:
+            last = segments[-1].get("end_sec")
+            if isinstance(last, (int, float)):
+                audio_seconds = float(last)
+        derived: dict[str, Any] = {
+            "segments": len(segments),
+            "seconds": round(elapsed, 1),
+        }
+        load_ms = timing.get("load_ms")
+        inference_ms = timing.get("inference_ms")
+        if isinstance(load_ms, (int, float)):
+            derived["model_load_ms"] = int(load_ms)
+        if isinstance(inference_ms, (int, float)):
+            derived["inference_ms"] = int(inference_ms)
+        if audio_seconds:
+            derived["audio_seconds"] = round(audio_seconds, 1)
+            derived["realtime_factor"] = round(audio_seconds / elapsed, 2)
+            if isinstance(inference_ms, (int, float)) and inference_ms > 0:
+                derived["inference_realtime_factor"] = round(
+                    audio_seconds / (inference_ms / 1000), 2
+                )
+        self.store.record_derived(self.task_id, "transcribe", **derived)
 
     def _llm_endpoint(self) -> str:
         base = self.config.llm_base_url.rstrip("/")
@@ -975,11 +1161,66 @@ class VideoArticlePipeline:
             return base
         return f"{base}/chat/completions"
 
+    def _record_llm_metric(
+        self,
+        step: str,
+        started: float,
+        attempts: list[dict[str, Any]],
+        backoff_ms: int,
+        response_name: str | None,
+        *,
+        label: str | None = None,
+        usage: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """记录一次 LLM 调用（含重试与退避）。
+
+        区分``call_ms``（真正在等模型的那一次）和 ``backoff_ms``（重试前 sleep），
+        因为两者要做的事完全不同：后者是网络问题，不是模型慢。
+        """
+        usage = usage or {}
+        duration_ms = int((time.monotonic() - started) * 1000)
+        succeeded = [item for item in attempts if item.get("ok")]
+        call_ms = succeeded[0]["call_ms"] if succeeded else None
+        total_tokens = usage.get("total_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        tokens_per_second = None
+        output_tokens_per_second = None
+        if call_ms and call_ms > 0:
+            seconds = call_ms / 1000
+            if total_tokens:
+                tokens_per_second = round(total_tokens / seconds, 1)
+            if completion_tokens:
+                # 只看生成部分：prompt 很长时总吞吐会掩盖模型本身的生成速度。
+                output_tokens_per_second = round(completion_tokens / seconds, 1)
+        self.store.record_metric(
+            self.task_id,
+            step,
+            {
+                "kind": "llm",
+                "label": label,
+                "response": response_name,
+                "model": self.config.llm_model,
+                "duration_ms": duration_ms,
+                "call_ms": call_ms,
+                "backoff_ms": backoff_ms,
+                "attempts": len(attempts),
+                "retries": max(0, len(attempts) - 1),
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": total_tokens,
+                "tokens_per_second": tokens_per_second,
+                "output_tokens_per_second": output_tokens_per_second,
+                "error": error,
+            },
+        )
+
     def _call_llm(
         self,
         step: str,
         messages: list[dict[str, str]],
         response_name: str | None = None,
+        label: str | None = None,
     ) -> dict[str, Any]:
         if os.environ.get("VIDEODOC_FAKE_LLM") == "1":
             raise PipelineError("测试 LLM 只能通过专用生成函数调用。")
@@ -1020,26 +1261,65 @@ class VideoArticlePipeline:
         # 20-40%。article 步骤有 10 次调用，重试 1 次时全任务成功率仅约 12%，
         # 3 次可到约 73%。用 VIDEODOC_LLM_RETRIES 覆盖，0 表示不重试。
         max_retries = int(os.environ.get("VIDEODOC_LLM_RETRIES", "3"))
+        started = time.monotonic()
+        attempts: list[dict[str, Any]] = []
+        backoff_ms = 0
         last_error: PipelineError | None = None
+        response_body: str | None = None
         for attempt in range(max_retries + 1):
+            attempt_started = time.monotonic()
             try:
                 with urllib.request.urlopen(
                     request,
                     timeout=self.config.llm_timeout_seconds,
                 ) as response:
                     response_body = response.read().decode("utf-8")
-                    break
+                attempts.append(
+                    {
+                        "attempt": attempt + 1,
+                        "call_ms": int((time.monotonic() - attempt_started) * 1000),
+                        "ok": True,
+                    }
+                )
+                break
             except urllib.error.HTTPError as error:
                 detail = error.read().decode("utf-8", errors="replace")[:2000]
+                attempts.append(
+                    {
+                        "attempt": attempt + 1,
+                        "call_ms": int((time.monotonic() - attempt_started) * 1000),
+                        "ok": False,
+                        "error": f"HTTP {error.code}",
+                    }
+                )
+                # HTTP 错误属于请求本身有问题，重试没有意义，保持立即失败。
+                self._record_llm_metric(
+                    step,
+                    started,
+                    attempts,
+                    backoff_ms,
+                    response_name,
+                    label=label,
+                    error=f"HTTP {error.code}",
+                )
                 raise PipelineError(f"DeepSeek API HTTP {error.code}: {detail}") from error
             except (
                 urllib.error.URLError,
                 http.client.RemoteDisconnected,
                 TimeoutError,
             ) as error:
+                attempts.append(
+                    {
+                        "attempt": attempt + 1,
+                        "call_ms": int((time.monotonic() - attempt_started) * 1000),
+                        "ok": False,
+                        "error": str(error),
+                    }
+                )
                 last_error = PipelineError(f"DeepSeek API 请求失败: {error}")
                 if attempt < max_retries:
                     delay = 3 * (attempt + 1)
+                    backoff_ms += delay * 1000
                     self.store.append_log(
                         self.task_id,
                         step,
@@ -1047,8 +1327,26 @@ class VideoArticlePipeline:
                     )
                     time.sleep(delay)
                     continue
+                self._record_llm_metric(
+                    step,
+                    started,
+                    attempts,
+                    backoff_ms,
+                    response_name,
+                    label=label,
+                    error=str(error),
+                )
                 raise last_error
-        else:
+        if response_body is None:
+            self._record_llm_metric(
+                step,
+                started,
+                attempts,
+                backoff_ms,
+                response_name,
+                label=label,
+                error="LLM 请求未得到响应。",
+            )
             raise last_error or PipelineError("LLM 请求未得到响应。")
         private_dir = self.task_dir / "private"
         private_dir.mkdir(parents=True, exist_ok=True)
@@ -1066,6 +1364,15 @@ class VideoArticlePipeline:
         usage = response_json.get("usage")
         if usage:
             self.store.append_log(self.task_id, step, f"usage={json.dumps(usage, ensure_ascii=False)}")
+        self._record_llm_metric(
+            step,
+            started,
+            attempts,
+            backoff_ms,
+            response_name,
+            label=label,
+            usage=usage if isinstance(usage, dict) else None,
+        )
         return extract_json_object(str(content))
 
     def _fake_outline(self, metadata: dict[str, Any], segments: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1128,6 +1435,7 @@ class VideoArticlePipeline:
 
     def _extract_frames(self, video_path: Path) -> list[dict[str, Any]]:
         analysis_dir = self.task_dir / "analysis"
+        frames_started = time.monotonic()
         try:
             artifact_dir, frames = extract_frames(
                 video_path,
@@ -1158,7 +1466,34 @@ class VideoArticlePipeline:
             "frames",
             outputs=[relative, "analysis/keyframes/frames", "analysis/keyframes/contact-sheet.jpg"],
         )
+        self._record_frames_metrics(frames, time.monotonic() - frames_started)
         return frames
+
+    def _record_frames_metrics(
+        self,
+        frames: list[dict[str, Any]],
+        elapsed: float,
+    ) -> None:
+        """记录抽帧的单位成本（秒 / 视频分钟）与输入画像。
+
+        帧数被 ``max_frames`` 封顶，所以耗时差异几乎全部来自「扫完整片」而不是
+        「导出多少帧」—— 只有归一化到视频分钟，跨任务比较才有意义。
+        """
+        elapsed = max(0.001, elapsed)
+        metadata = self._load_metadata()
+        video = metadata.get("video") or {}
+        derived: dict[str, Any] = {
+            "frames": len(frames),
+            "seconds": round(elapsed, 1),
+            "source_codec": video.get("codec"),
+            "source_height": video.get("height"),
+            "source_fps": video.get("fps"),
+        }
+        duration = metadata.get("duration")
+        if isinstance(duration, (int, float)) and duration > 0:
+            derived["video_seconds"] = round(float(duration), 1)
+            derived["seconds_per_video_minute"] = round(elapsed / (float(duration) / 60), 2)
+        self.store.record_derived(self.task_id, "frames", **derived)
 
     def _select_images(
         self,
@@ -1224,6 +1559,7 @@ class VideoArticlePipeline:
             )
 
         def action() -> list[dict[str, Any]]:
+            started = time.monotonic()
             evidence = capability.run(
                 capability_settings,
                 list(images),
@@ -1233,13 +1569,62 @@ class VideoArticlePipeline:
                 ),
                 task_dir=self.task_dir,
             )
-            return self._persist_ocr_images(
+            persisted = self._persist_ocr_images(
                 evidence.images, artifact_key=artifact_key, filename=filename
             )
+            self._record_vision_metrics(persisted, time.monotonic() - started)
+            return persisted
 
         if self._has_step(IMAGE_EVIDENCE_STEP):
             return self._step(IMAGE_EVIDENCE_STEP, action)
         return action()
+
+    def _record_vision_metrics(
+        self,
+        images: list[dict[str, Any]],
+        elapsed: float,
+    ) -> None:
+        """汇总视觉阶段的耗时构成：本地推理、云端调用、限流等待分开记。
+
+        云端网关与本地 OCR 的耗时实测相差 40 倍（中位 7s vs 236-298s）。只有把
+        「限流等待」和「真正调用」拆开，才知道该去调哪一边；混在一起就只能看到
+        一个无法行动的数字。
+        """
+        elapsed = max(0.001, elapsed)
+
+        def collect(key: str) -> list[int]:
+            values: list[int] = []
+            for image in images:
+                value = image.get(key)
+                if isinstance(value, (int, float)):
+                    values.append(int(value))
+            return values
+
+        local = collect("ocr_elapsed_ms")
+        remote = collect("vision_elapsed_ms")
+        waits = collect("vision_wait_ms")
+        providers = sorted(
+            {
+                str(image.get("vision_provider"))
+                for image in images
+                if image.get("vision_provider")
+            }
+        )
+        derived: dict[str, Any] = {
+            "images": len(images),
+            "seconds": round(elapsed, 1),
+            "seconds_per_image": round(elapsed / len(images), 2) if images else None,
+            "local_images": len(local),
+            "local_ms_total": sum(local),
+            "remote_images": len(remote),
+            "remote_ms_total": sum(remote),
+            "remote_ms_median": (
+                int(statistics.median(remote)) if remote else None
+            ),
+            "wait_ms_total": sum(waits),
+            "providers": ", ".join(providers) if providers else None,
+        }
+        self.store.record_derived(self.task_id, IMAGE_EVIDENCE_STEP, **derived)
 
     def _persist_ocr_images(
         self,
@@ -1471,6 +1856,7 @@ class VideoArticlePipeline:
                         },
                     ],
                     response_name=f"article-{section['id']}-response",
+                    label=section["id"],
                 )
                 response_id = str(payload.get("id") or section["id"])
                 if response_id != section["id"]:

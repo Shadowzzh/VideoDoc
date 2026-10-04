@@ -455,21 +455,28 @@ class ImageVisionCapability:
                 elif quota.remaining() <= 0:
                     current.setdefault("vision_error", "今日云端图像识别预算已用完。")
                 else:
+                    wait_ms = 0
                     if min_interval and last_external_at:
                         wait = min_interval - (time.monotonic() - last_external_at)
                         if wait > 0:
+                            # 限流等待不是模型慢，必须与真正的调用耗时分开计。
+                            wait_ms = int(wait * 1000)
                             time.sleep(wait)
                     started = time.monotonic()
                     try:
                         result = vision_remote.analyze(remote_config, prompt, frame_path)
                     except (vision_remote.RemoteVisionError, OSError) as error:
                         current["vision_error"] = str(error)
+                        if wait_ms:
+                            current["vision_wait_ms"] = wait_ms
                         log(f"[云端] {current.get('file')} 失败（非阻塞）: {error}")
                     else:
                         current["vision_text"] = result["text"]
                         current["vision_model"] = result["model"]
                         current["vision_provider"] = f"{remote_config.protocol}:{result['model']}"
                         current["vision_elapsed_ms"] = result["elapsed_ms"]
+                        if wait_ms:
+                            current["vision_wait_ms"] = wait_ms
                         current.pop("vision_error", None)
                         external_done += 1
                         quota.consume()

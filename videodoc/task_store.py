@@ -14,7 +14,11 @@ from typing import Any
 
 
 TASK_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-f0-9]{8}$")
-TASK_SCHEMA_VERSION = 3
+TASK_SCHEMA_VERSION = 4
+
+# 性能指标明细：append-only 事件流，每行一个 JSON 对象。
+# 放在任务目录根部，不写进 task.json，避免高频事件（如子进程心跳）反复重写状态文件。
+METRICS_FILENAME = "metrics.jsonl"
 
 # 核心流水线步骤。可插拔能力声明的步骤由 TaskStore 按 ``after`` 锚点插到对应位置：
 # 这里没有图像识别，因此**移除该能力后核心流水线照样跑完**。
@@ -41,6 +45,18 @@ class TaskConfirmationError(ValueError):
 
 def utc_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def duration_ms(started_at: str | None, finished_at: str | None) -> int | None:
+    """两个 ISO 时间戳之间的毫秒数；任一缺失或无法解析时返回 ``None``。"""
+    if not started_at or not finished_at:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at)
+        finished = datetime.fromisoformat(finished_at)
+    except ValueError:
+        return None
+    return max(0, int((finished - started).total_seconds() * 1000))
 
 
 class TaskStore:
@@ -104,6 +120,9 @@ class TaskStore:
                     "error": None,
                     "attempt_count": 0,
                     "attempts": [],
+                    # 性能指标聚合：``{kind: [事件...], "updated_at": ...}``。
+                    # 明细同时写进 metrics.jsonl，这里只保留 API/前端要用的摘要。
+                    "metrics": {},
                 }
                 for key, label in self._step_layout()
             ],
@@ -327,6 +346,87 @@ class TaskStore:
                 self._append_text(attempt_path, text)
         return path
 
+    def record_metric(self, task_id: str, step_key: str, event: dict[str, Any]) -> None:
+        """记录一条阶段内性能指标：明细进 metrics.jsonl，摘要聚合进 ``step.metrics``。
+
+        ``event`` 需要带 ``kind``（``command`` / ``llm`` / ``vision`` 等）。明细是
+        append-only 的，便于跨任务聚合分析；聚合值让 API 和前端不必解析 jsonl。
+        """
+        kind = str(event.get("kind") or "event")
+        payload = {"at": utc_now(), "step": step_key, **event}
+        with self._lock:
+            self._append_text(
+                self.task_dir(task_id) / METRICS_FILENAME,
+                json.dumps(payload, ensure_ascii=False),
+            )
+            task = self.get(task_id)
+            step = next((item for item in task["steps"] if item["key"] == step_key), None)
+            if step is None:
+                # 步骤位可能已被移除（能力下线）或老任务没有该槽位：只留明细，不报错。
+                return
+            metrics = step.setdefault("metrics", {})
+            bucket = metrics.setdefault(kind, [])
+            if isinstance(bucket, list):
+                bucket.append({key: value for key, value in event.items() if key != "kind"})
+            metrics["updated_at"] = payload["at"]
+            task["updated_at"] = payload["at"]
+            self._write(task)
+
+    def record_derived(self, task_id: str, step_key: str, **values: Any) -> None:
+        """记录阶段派生指标（输入规模 + 归一化结果）。
+
+        绝对耗时不能跨任务比较：同一阶段在不同输入上会差几十倍。存下输入规模
+        （字节数、音频秒数、视频分钟、帧数）与归一化值（MB/s、实时倍率、秒/视频分钟），
+        才能回答「这次是不是真的变慢了」。
+        """
+        payload = {key: value for key, value in values.items() if value is not None}
+        if not payload:
+            return
+        self.append_metric(task_id, {"kind": "derived", "step": step_key, **payload})
+        with self._lock:
+            task = self.get(task_id)
+            step = next((item for item in task["steps"] if item["key"] == step_key), None)
+            if step is None:
+                return
+            metrics = step.setdefault("metrics", {})
+            derived = metrics.setdefault("derived", {})
+            if isinstance(derived, dict):
+                derived.update(payload)
+            metrics["updated_at"] = utc_now()
+            self._write(task)
+
+    def append_metric(self, task_id: str, event: dict[str, Any]) -> None:
+        """只追加一条 metrics.jsonl 明细，不回写 task.json。
+
+        用于心跳这类高频事件：它们要证明「子进程还活着」，但不值得每 15 秒重写一遍
+        任务状态文件。
+        """
+        payload = {"at": utc_now(), **event}
+        with self._lock:
+            self._append_text(
+                self.task_dir(task_id) / METRICS_FILENAME,
+                json.dumps(payload, ensure_ascii=False),
+            )
+
+    def read_metrics(self, task_id: str, limit: int = 400) -> list[dict[str, Any]]:
+        """读取指标明细（默认最近 ``limit`` 条）；坏行跳过，不影响任务本身。"""
+        path = self.task_dir(task_id) / METRICS_FILENAME
+        if not path.is_file():
+            return []
+        events: list[dict[str, Any]] = []
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in lines[-limit:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(value, dict):
+                events.append(value)
+        return events
+
     def log_tail(self, task_id: str, step_key: str, max_lines: int = 120) -> str:
         path = self.task_dir(task_id) / "logs" / f"{step_key}.log"
         if not path.is_file():
@@ -343,9 +443,13 @@ class TaskStore:
             "total": len(task["steps"]),
             "percent": round(completed / len(task["steps"]) * 100),
         }
+        # 阶段耗时由后端统一算，避免各消费方（页面、CLI、分析脚本）各算一套口径。
+        for step in task["steps"]:
+            step["duration_ms"] = duration_ms(step.get("started_at"), step.get("finished_at"))
         if include_logs:
             for step in task["steps"]:
                 step["log_tail"] = self.log_tail(task_id, step["key"])
+            self._attach_heartbeats(task, self.read_metrics(task_id))
         resume_step = self._resume_step(task)
         task["can_resume"] = (
             task.get("status") in {"failed", "interrupted"} and resume_step is not None
@@ -406,6 +510,8 @@ class TaskStore:
                 int(step.get("attempt_count", 0)),
                 len(attempts),
             )
+            if not isinstance(step.get("metrics"), dict):
+                step["metrics"] = {}
         return normalized
 
     def _article_title(self, task_id: str, task: dict[str, Any]) -> str | None:
@@ -422,6 +528,20 @@ class TaskStore:
             return None
         title = str(article.get("title") or "").strip()
         return title or None
+
+    @staticmethod
+    def _attach_heartbeats(task: dict[str, Any], events: list[dict[str, Any]]) -> None:
+        """把每个阶段最新的一条心跳挂到 step 上。
+
+        长命令（例如抽帧的全片扫描）可能十几分钟不产出任何文件，进度条动不了；
+        心搏事件是判断「子进程仍在跑」还是「已经卡死」的唯一外部信号。
+        """
+        latest: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if event.get("kind") == "heartbeat" and event.get("step"):
+                latest[str(event["step"])] = event
+        for step in task["steps"]:
+            step["heartbeat"] = latest.get(step["key"])
 
     @staticmethod
     def _find_step(task: dict[str, Any], step_key: str) -> dict[str, Any]:

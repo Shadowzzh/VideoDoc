@@ -133,3 +133,71 @@ def test_move_to_trash_requires_confirmation_and_idle_task(tmp_path):
         store.move_to_trash(task["id"], task["id"])
 
     assert store.task_dir(task["id"]).is_dir()
+
+
+def test_record_metric_writes_jsonl_and_aggregates_into_step(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    task_id = task["id"]
+
+    store.record_metric(
+        task_id,
+        "probe",
+        {
+            "kind": "command",
+            "program": "ffmpeg",
+            "arguments": 3,
+            "started_at": "2026-10-04T12:00:00+08:00",
+            "duration_ms": 1200,
+            "exit_code": 0,
+        },
+    )
+    store.record_derived(task_id, "probe", bytes=1024, megabytes_per_second=1.5)
+    store.append_metric(
+        task_id,
+        {"kind": "heartbeat", "step": "probe", "pid": 42, "elapsed_ms": 15000},
+    )
+
+    events = store.read_metrics(task_id)
+    assert [event["kind"] for event in events] == ["command", "derived", "heartbeat"]
+    assert events[0]["step"] == "probe"
+
+    step = store.public(task_id, include_logs=True)["steps"][0]
+    assert step["metrics"]["command"][0]["program"] == "ffmpeg"
+    assert step["metrics"]["derived"] == {"bytes": 1024, "megabytes_per_second": 1.5}
+    assert step["heartbeat"]["elapsed_ms"] == 15000
+
+
+def test_step_duration_is_derived_from_timestamps(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    store.start_attempt(task["id"], "probe")
+    store.finish_attempt(task["id"], "probe", 1, status="completed")
+
+    step = store.public(task["id"])["steps"][0]
+    assert step["duration_ms"] is not None
+    assert step["duration_ms"] >= 0
+
+    pending = store.public(task["id"])["steps"][1]
+    assert pending["duration_ms"] is None
+
+
+def test_record_metric_survives_missing_step_slot(tmp_path):
+    """能力下线后步骤位不存在：只留明细，不能把任务搞挂。"""
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+
+    store.record_metric(task["id"], "removed-capability", {"kind": "command", "duration_ms": 1})
+    store.record_derived(task["id"], "removed-capability", seconds=1)
+
+    assert len(store.read_metrics(task["id"])) == 2
+
+
+def test_metrics_file_counts_toward_deletion_preview(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    store.append_metric(task["id"], {"kind": "heartbeat", "step": "probe", "elapsed_ms": 1})
+
+    preview = store.deletion_preview(task["id"])
+
+    assert preview["groups"]["other"]["files"] >= 1

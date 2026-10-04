@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -111,6 +112,7 @@ def _run_pywhispercpp(
     log_path: Path,
     *,
     log: Callable[[str], None] | None,
+    timing: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     try:
         from pywhispercpp.model import Model
@@ -121,6 +123,7 @@ def _run_pywhispercpp(
 
     reference = model_reference()
     directory = model_dir()
+    load_started = time.monotonic()
     if not Path(reference).is_file() and directory is None:
         if log:
             log(
@@ -134,11 +137,18 @@ def _run_pywhispercpp(
         n_threads=thread_count(),
         redirect_whispercpp_logs_to=str(log_path),
     )
+    if timing is not None:
+        # 加载 1.6GB 模型是固定成本，与音频长短无关；混进总耗时会让短视频的
+        # 实时倍率完全失真（5 秒音频实测 45 秒，其中大部分是加载）。
+        timing["load_ms"] = int((time.monotonic() - load_started) * 1000)
+    inference_started = time.monotonic()
     raw = model.transcribe(
         str(audio_path),
         language=language(),
         print_progress=True,
     )
+    if timing is not None:
+        timing["inference_ms"] = int((time.monotonic() - inference_started) * 1000)
     return to_pipeline_segments(list(raw))
 
 
@@ -217,6 +227,7 @@ def transcribe(
     *,
     runner: Callable[[list[str], dict[str, str]], None] | None = None,
     log: Callable[[str], None] | None = None,
+    timing: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """转写音频，写出 ``transcript.srt`` / ``transcript.txt`` 并返回分段。
 
@@ -243,7 +254,7 @@ def transcribe(
                 f"使用 pywhispercpp 转写（模型 {model_reference()}，"
                 f"线程 {thread_count()}）"
             )
-        segments = _run_pywhispercpp(audio_path, log_path, log=log)
+        segments = _run_pywhispercpp(audio_path, log_path, log=log, timing=timing)
         write_srt(segments, srt_path)
         write_text(segments, text_path)
 
