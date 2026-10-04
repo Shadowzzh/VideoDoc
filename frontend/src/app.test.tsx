@@ -261,4 +261,103 @@ describe("VideoDoc app", () => {
     })
     await waitFor(() => expect(screen.getByText("等待中")).toBeInTheDocument())
   })
+
+  it("shows per-step duration and the breakdown of the slowest stage", async () => {
+    window.history.pushState({}, "", "/app/tasks/task-metrics")
+    const task = {
+      id: "task-metrics",
+      url: "https://example.com/video",
+      status: "completed",
+      created_at: "2026-10-04T12:24:04+08:00",
+      updated_at: "2026-10-04T12:40:34+08:00",
+      started_at: "2026-10-04T12:24:04+08:00",
+      finished_at: "2026-10-04T12:40:34+08:00",
+      error: null,
+      metadata: { title: "性能任务" },
+      artifacts: {},
+      resume_count: 0,
+      can_resume: false,
+      resume_from: null,
+      progress: { completed: 2, total: 2, percent: 100 },
+      steps: [
+        {
+          key: "probe",
+          label: "解析来源与元数据",
+          status: "completed",
+          started_at: "2026-10-04T12:24:04+08:00",
+          finished_at: "2026-10-04T12:24:09+08:00",
+          command: "python -m yt_dlp ...",
+          outputs: ["metadata.json"],
+          error: null,
+          attempt_count: 1,
+          attempts: [],
+          duration_ms: 5_000,
+          metrics: {},
+          heartbeat: null,
+        },
+        {
+          key: "frames",
+          label: "常规模式提取关键帧",
+          status: "completed",
+          started_at: "2026-10-04T12:26:56+08:00",
+          finished_at: "2026-10-04T12:40:34+08:00",
+          command: "python -m claude_real_video ...",
+          outputs: [],
+          error: null,
+          attempt_count: 1,
+          attempts: [],
+          duration_ms: 818_000,
+          metrics: {
+            command: [
+              {
+                program: "python -m claude_real_video",
+                arguments: 12,
+                started_at: "2026-10-04T12:26:56+08:00",
+                duration_ms: 818_000,
+                exit_code: 0,
+              },
+            ],
+            llm: [],
+            derived: {
+              frames: 120,
+              seconds_per_video_minute: 37.4,
+              source_codec: "av01.0.08M.08.0",
+            },
+          },
+          heartbeat: null,
+        },
+      ],
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === "/api/tasks") {
+        return new Response("[]", { status: 200 })
+      }
+      return new Response(JSON.stringify(task), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    render(<TooltipProvider><App /></TooltipProvider>)
+
+    // 已完成阶段直接显示后端算好的耗时（818 秒 → 13m 38s）。
+    await waitFor(() => {
+      expect(screen.getAllByText("13m 38s").length).toBeGreaterThan(0)
+    })
+
+    // 任务级耗时分布：818s 占 823s 的 99%，5s 的 probe 归到 <1%。
+    expect(screen.getByText("耗时分布")).toBeInTheDocument()
+    expect(screen.getByText("99%")).toBeInTheDocument()
+    expect(screen.getByText("<1%")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /常规模式提取关键帧/ }))
+
+    expect(await screen.findByText("耗时构成")).toBeInTheDocument()
+    expect(screen.getByText("归一化指标")).toBeInTheDocument()
+    expect(screen.getByText("秒 / 视频分钟")).toBeInTheDocument()
+    expect(screen.getByText("37.4 s")).toBeInTheDocument()
+    expect(screen.getByText("python -m claude_real_video")).toBeInTheDocument()
+  })
 })

@@ -10,6 +10,18 @@ export interface TaskMetadata {
   webpage_url?: string
   extractor?: string
   thumbnail?: string
+  /** 输入画像：解释“同一阶段为何时快时慢”所需的分辨率 / 帧率 / 编码。 */
+  video?: VideoProfile
+}
+
+export interface VideoProfile {
+  codec?: string | null
+  audio_codec?: string | null
+  width?: number | null
+  height?: number | null
+  fps?: number | null
+  bitrate_kbps?: number | null
+  filesize?: number | null
 }
 
 export interface TaskProgress {
@@ -30,6 +42,56 @@ export interface TaskStep {
   attempt_count: number
   attempts: TaskAttempt[]
   log_tail?: string
+  /** 后端算好的阶段耗时（毫秒）；运行中为 null。 */
+  duration_ms?: number | null
+  /** 性能指标聚合；老任务没有这个字段。 */
+  metrics?: StepMetrics
+  /** 长命令的存活信号；只在该阶段是运行中且发过心跳时存在。 */
+  heartbeat?: StepHeartbeat | null
+}
+
+/** 单条外部命令的耗时。 */
+export interface StepCommandMetric {
+  program: string
+  arguments: number
+  started_at: string
+  duration_ms: number
+  exit_code: number | null
+}
+
+/** 单次 LLM 调用：``call_ms`` 是在等模型，``backoff_ms`` 是重试前的 sleep。 */
+export interface StepLlmMetric {
+  label: string | null
+  response: string | null
+  model: string
+  duration_ms: number
+  call_ms: number | null
+  backoff_ms: number
+  attempts: number
+  retries: number
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  total_tokens: number | null
+  tokens_per_second: number | null
+  output_tokens_per_second: number | null
+  error: string | null
+}
+
+/** 归一化指标：把耗时除以输入规模，跨任务才可比。 */
+export type StepDerivedMetrics = Record<string, string | number>
+
+export interface StepMetrics {
+  command?: StepCommandMetric[]
+  llm?: StepLlmMetric[]
+  derived?: StepDerivedMetrics
+  updated_at?: string
+}
+
+export interface StepHeartbeat {
+  at: string
+  step: string
+  pid: number
+  elapsed_ms: number
 }
 
 export interface TaskAttempt {

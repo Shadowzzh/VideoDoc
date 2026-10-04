@@ -11,7 +11,8 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
 import { createTask, primaryTaskHref, taskHref } from "@/lib/api"
-import { formatDate, taskTitle } from "@/lib/format"
+import { formatDate, formatDurationMilliseconds, taskTitle } from "@/lib/format"
+import { taskTiming } from "@/lib/timing"
 import { useTasks } from "@/hooks/use-tasks"
 
 export function HomePage() {
@@ -89,23 +90,29 @@ export function HomePage() {
               </Card>
             ) : null}
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {tasks.map((task) => (
-                <Card key={task.id} className="group relative h-full gap-4 py-5 transition-colors hover:ring-foreground/25">
-                  <a href={primaryTaskHref(task)} className="block pr-10">
-                    <CardHeader className="gap-3">
-                      <div className="flex items-center justify-between gap-3"><StatusBadge status={task.status} /><span className="text-xs text-muted-foreground">{formatDate(task.created_at)}</span></div>
-                      <CardTitle className="line-clamp-2 text-base leading-6">{taskTitle(task)}</CardTitle>
-                      <CardDescription>{task.metadata.extractor || "等待识别来源"}</CardDescription>
-                    </CardHeader>
-                  </a>
-                  <div className="absolute right-3 top-3">
-                    <TaskActionsMenu
-                      task={task}
-                      onDeleted={() => window.location.assign("/app/")}
-                    />
-                  </div>
-                </Card>
-              ))}
+              {tasks.map((task) => {
+                const timing = taskTiming(task, Date.now())
+                return (
+                  <Card key={task.id} className="group relative h-full gap-4 py-5 transition-colors hover:ring-foreground/25">
+                    <a href={primaryTaskHref(task)} className="block pr-10">
+                      <CardHeader className="gap-3">
+                        <div className="flex items-center justify-between gap-3"><StatusBadge status={task.status} /><span className="text-xs text-muted-foreground">{formatDate(task.created_at)}</span></div>
+                        <CardTitle className="line-clamp-2 text-base leading-6">{taskTitle(task)}</CardTitle>
+                        <CardDescription className="flex items-center justify-between gap-3">
+                          <span className="truncate">{task.metadata.extractor || "等待识别来源"}</span>
+                          {timing.totalMs > 0 ? <span className="shrink-0 font-mono text-xs">{formatDurationMilliseconds(timing.totalMs)}</span> : null}
+                        </CardDescription>
+                      </CardHeader>
+                    </a>
+                    <div className="absolute right-3 top-3">
+                      <TaskActionsMenu
+                        task={task}
+                        onDeleted={() => window.location.assign("/app/")}
+                      />
+                    </div>
+                  </Card>
+                )
+              })}
             </div>
           </section>
         </div>
