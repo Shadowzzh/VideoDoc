@@ -57,6 +57,46 @@ describe("TaskActionsMenu", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it("allows deleting a queued task", async () => {
+    const onDeleted = vi.fn()
+    const queuedTask = { ...task, status: "queued" } as VideoTask
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith("/deletion-preview")) {
+        // 等待中的任务还没产物，预览里只有几个 0 字节分组。
+        return new Response(JSON.stringify({
+          id: task.id,
+          title: "测试任务",
+          status: "queued",
+          deletable: true,
+          total_bytes: 0,
+          total_files: 0,
+          groups: {
+            video: { label: "视频", bytes: 0, files: 0 },
+            audio: { label: "音频", bytes: 0, files: 0 },
+          },
+        }), { status: 200, headers: { "Content-Type": "application/json" } })
+      }
+      expect(init?.method).toBe("DELETE")
+      return new Response(JSON.stringify({
+        id: task.id,
+        deleted_at: "2026-10-05T15:40:00+08:00",
+        recoverable: true,
+      }), { status: 200, headers: { "Content-Type": "application/json" } })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    render(<TaskActionsMenu task={queuedTask} onDeleted={onDeleted} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "测试任务的操作菜单" }))
+    const item = await screen.findByText("删除任务")
+    expect(item.closest("[data-disabled]")).toBeNull()
+    fireEvent.click(item)
+    fireEvent.click(await screen.findByRole("button", { name: "移入回收站" }))
+
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce())
+  })
+
   it("disables deletion while a task is running", async () => {
     const runningTask = { ...task, status: "running" } as VideoTask
 

@@ -123,16 +123,32 @@ def test_deletion_preview_groups_files_and_move_to_trash(tmp_path):
     assert (trashed[0] / "article.md").is_file()
 
 
-def test_move_to_trash_requires_confirmation_and_idle_task(tmp_path):
+def test_move_to_trash_requires_confirmation_and_blocks_only_running(tmp_path):
     store = TaskStore(tmp_path / "tasks")
-    task = store.create("https://example.com/video")
 
+    queued = store.create("https://example.com/video")
     with pytest.raises(TaskConfirmationError, match="任务 ID"):
-        store.move_to_trash(task["id"], "wrong-id")
-    with pytest.raises(TaskStateError, match="不能删除"):
-        store.move_to_trash(task["id"], task["id"])
+        store.move_to_trash(queued["id"], "wrong-id")
+    # 等待中的任务可以删：它只是已提交线程池、还没轮到执行，目录里没有任何产物。
+    deleted = store.move_to_trash(queued["id"], queued["id"])
+    assert deleted["recoverable"] is True
+    assert not store.task_dir(queued["id"]).is_dir()
 
-    assert store.task_dir(task["id"]).is_dir()
+    running = store.create("https://example.com/video")
+    store.update(running["id"], status="running")
+    with pytest.raises(TaskStateError, match="不能删除"):
+        store.move_to_trash(running["id"], running["id"])
+    assert store.task_dir(running["id"]).is_dir()
+
+
+def test_deletion_preview_says_queued_is_deletable(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    queued = store.create("https://example.com/video")
+    running = store.create("https://example.com/video")
+    store.update(running["id"], status="running")
+
+    assert store.deletion_preview(queued["id"])["deletable"] is True
+    assert store.deletion_preview(running["id"])["deletable"] is False
 
 
 def test_record_metric_writes_jsonl_and_aggregates_into_step(tmp_path):

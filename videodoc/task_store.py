@@ -16,6 +16,11 @@ from typing import Any
 TASK_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-f0-9]{8}$")
 TASK_SCHEMA_VERSION = 4
 
+# 不允许删除的状态。``queued`` 不在其中：它只表示「已提交线程池、还没轮到执行」，
+# 目录里通常只有一个 task.json，删掉不会丢任何产物；而运行中的任务正在写这些产物，
+# 移走目录会让流水线在写盘时炸掉，所以继续拦。
+DELETION_BLOCKED_STATUSES = frozenset({"running"})
+
 # 性能指标明细：append-only 事件流，每行一个 JSON 对象。
 # 放在任务目录根部，不写进 task.json，避免高频事件（如子进程心跳）反复重写状态文件。
 METRICS_FILENAME = "metrics.jsonl"
@@ -290,7 +295,7 @@ class TaskStore:
                 "id": task_id,
                 "title": title,
                 "status": task.get("status"),
-                "deletable": task.get("status") not in {"queued", "running"},
+                "deletable": task.get("status") not in DELETION_BLOCKED_STATUSES,
                 "total_bytes": total_bytes,
                 "total_files": total_files,
                 "groups": groups,
@@ -302,8 +307,8 @@ class TaskStore:
             if confirmation != task_id:
                 raise TaskConfirmationError("删除确认值与任务 ID 不一致。")
             task = self.get(task_id)
-            if task.get("status") in {"queued", "running"}:
-                raise TaskStateError("排队中或运行中的任务不能删除，请等待结束。")
+            if task.get("status") in DELETION_BLOCKED_STATUSES:
+                raise TaskStateError("运行中的任务不能删除，请等待结束。")
             source = self.task_dir(task_id)
             self.trash_root.mkdir(parents=True, exist_ok=True)
             now = datetime.now().astimezone()

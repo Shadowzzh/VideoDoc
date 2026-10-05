@@ -103,7 +103,7 @@ pnpm --dir frontend install && pnpm --dir frontend build
 - 单用户、单 worker，任务顺序执行；JSON 文件存储，不引入数据库
 - 正式验收 YouTube 与 Bilibili；X 仅 best-effort
 - 本地 OCR 仅 macOS 可用
-- 删除任务走可恢复回收站，暂无网页端恢复入口
+- 删除任务走可恢复回收站（等待中也可删，仅运行中拒绝），暂无网页端恢复入口
 
 ## 开发
 

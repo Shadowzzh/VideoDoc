@@ -144,6 +144,22 @@ def test_completed_task_can_be_previewed_and_moved_to_trash(app, client):
     assert client.get(f"/api/tasks/{task['id']}").status_code == 404
 
 
+def test_queued_task_can_be_deleted(app, client):
+    store = app.extensions["task_store"]
+    task = store.create("https://example.com/video")
+
+    preview = client.get(f"/api/tasks/{task['id']}/deletion-preview")
+    deleted = client.delete(
+        f"/api/tasks/{task['id']}",
+        json={"confirmation": task["id"]},
+    )
+
+    assert preview.status_code == 200
+    assert preview.get_json()["deletable"] is True
+    assert deleted.status_code == 200
+    assert client.get(f"/api/tasks/{task['id']}").status_code == 404
+
+
 def test_running_task_cannot_be_deleted(app, client):
     store = app.extensions["task_store"]
     task = store.create("https://example.com/video")

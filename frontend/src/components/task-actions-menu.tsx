@@ -34,7 +34,10 @@ export function TaskActionsMenu({ task, onDeleted }: TaskActionsMenuProps) {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const deletable = task.status !== "queued" && task.status !== "running"
+  // "queued" 只表示已提交线程池、还没轮到执行，此时删除不会丢产物，所以允许；
+  // "running" 正在写产物，移走目录会让流水线写盘失败，继续拦（与后端
+  // task_store.DELETION_BLOCKED_STATUSES 保持一致）。
+  const deletable = task.status !== "running"
 
   const openDeleteDialog = async () => {
     setDeleteOpen(true)
