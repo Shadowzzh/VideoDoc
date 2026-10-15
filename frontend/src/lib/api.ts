@@ -3,6 +3,7 @@ import type {
   SettingsTestResult,
   SettingsUpdate,
   TaskDeletionPreview,
+  TaskStatus,
   VideoResult,
   VideoTask,
 } from "@/types"
@@ -48,6 +49,16 @@ export function resumeTask(taskId: string): Promise<{ id: string; resume_from: s
   return requestJson<{ id: string; resume_from: string }>(`/api/tasks/${taskId}/resume`, {
     method: "POST",
   })
+}
+
+/** 终止等待中或运行中的任务。返回 202 时可能还在收尾，最终状态由轮询确认。 */
+export function cancelTask(taskId: string): Promise<{
+  id: string
+  status: TaskStatus
+  cancel_requested_at: string | null
+  terminated_pids: number[]
+}> {
+  return requestJson(`/api/tasks/${taskId}/cancel`, { method: "POST" })
 }
 
 export function getSettings(): Promise<SettingsResponse> {

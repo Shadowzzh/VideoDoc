@@ -1,6 +1,13 @@
+import json
+
 import pytest
 
-from videodoc.task_store import TaskConfirmationError, TaskStateError, TaskStore
+from videodoc.task_store import (
+    TaskConfirmationError,
+    TaskStateError,
+    TaskStore,
+    utc_now,
+)
 
 
 def test_task_store_persists_steps_and_logs(tmp_path):
@@ -87,7 +94,7 @@ def test_queue_resume_is_atomic_and_only_accepts_paused_task(tmp_path):
     assert resumed["status"] == "queued"
     assert resumed["steps"][0]["status"] == "pending"
     assert resumed["resume_count"] == 1
-    with pytest.raises(TaskStateError, match="只有失败或中断"):
+    with pytest.raises(TaskStateError, match="只有失败、中断或已取消"):
         store.queue_resume(task["id"], "probe")
 
 
@@ -217,3 +224,87 @@ def test_metrics_file_counts_toward_deletion_preview(tmp_path):
     preview = store.deletion_preview(task["id"])
 
     assert preview["groups"]["other"]["files"] >= 1
+
+
+def test_request_cancel_settles_queued_task_immediately(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+
+    requested = store.request_cancel(task["id"])
+
+    # 等待中的任务没有在跑的进程，也没有半成品需要流水线收尾：直接落 cancelled。
+    assert requested["status"] == "cancelled"
+    assert requested["cancel_requested_at"]
+    assert store.get(task["id"])["finished_at"] is not None
+    # 取消不是失败：不能把任务变成「可删除但不可恢复」的死胡同。
+    assert store.public(task["id"])["can_resume"] is True
+
+
+def test_request_cancel_only_flags_running_task(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    store.update(task["id"], status="running")
+    store.start_attempt(task["id"], "probe")
+
+    requested = store.request_cancel(task["id"])
+
+    # 状态由流水线在自己的检查点收敛成 cancelled，避免与流水线写盘竞争。
+    assert requested["status"] == "running"
+    assert requested["cancel_requested_at"]
+    assert store.running_step_key(task["id"]) == "probe"
+
+
+def test_request_cancel_rejects_finished_task(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    store.update(task["id"], status="completed")
+
+    with pytest.raises(TaskStateError, match="等待中或运行中"):
+        store.request_cancel(task["id"])
+
+    # 已完成的任务不能被取消改写成别的状态。
+    assert store.get(task["id"])["status"] == "completed"
+
+
+def test_cancelled_task_can_resume_and_clears_cancel_flag(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    store.update(task["id"], status="running")
+    store.start_attempt(task["id"], "probe")
+    store.update(
+        task["id"],
+        status="cancelled",
+        finished_at=utc_now(),
+        cancel_requested_at=utc_now(),
+    )
+
+    resumed = store.queue_resume(task["id"], "probe")
+
+    assert resumed["status"] == "queued"
+    assert resumed["resume_from"] == "probe"
+    # 不清掉取消标记的话，重新排队的任务会被新线程立刻当成「已取消」而直接退出。
+    assert resumed["cancel_requested_at"] is None
+
+
+def test_mark_interrupted_clears_stale_cancel_flag(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    store.update(task["id"], status="running", cancel_requested_at=utc_now())
+
+    store.mark_interrupted()
+
+    interrupted = store.get(task["id"])
+    assert interrupted["status"] == "interrupted"
+    # 服务重启后进程全没了，原来的取消请求已经没有意义。
+    assert interrupted["cancel_requested_at"] is None
+
+
+def test_legacy_task_without_cancel_field_normalizes_to_none(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    path = store.task_dir(task["id"]) / "task.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("cancel_requested_at", None)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    assert store.get(task["id"])["cancel_requested_at"] is None

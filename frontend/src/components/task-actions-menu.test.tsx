@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { TaskActionsMenu } from "@/components/task-actions-menu"
@@ -105,5 +105,56 @@ describe("TaskActionsMenu", () => {
     fireEvent.click(screen.getByRole("button", { name: "测试任务的操作菜单" }))
     const item = await screen.findByText("运行中不可删除")
     expect(item.closest("[data-disabled]")).toBeInTheDocument()
+  })
+
+  it("cancels a running task after confirmation", async () => {
+    const onChanged = vi.fn()
+    const runningTask = { ...task, status: "running" } as VideoTask
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toContain(`/api/tasks/${task.id}/cancel`)
+      expect(init?.method).toBe("POST")
+      return new Response(JSON.stringify({
+        id: task.id,
+        status: "running",
+        cancel_requested_at: "2026-10-15T21:40:00+08:00",
+        terminated_pids: [661],
+      }), { status: 202, headers: { "Content-Type": "application/json" } })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    render(<TaskActionsMenu task={runningTask} onDeleted={vi.fn()} onChanged={onChanged} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "测试任务的操作菜单" }))
+    fireEvent.click(await screen.findByText("终止任务"))
+
+    // 确认框要说明「产物会保留」：用户怕的是终止之后视频要重新下载。
+    const dialog = await screen.findByRole("alertdialog")
+    expect(within(dialog).getByText(/产物全部保留/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole("button", { name: "终止任务" }))
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledOnce())
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("disables cancelling for finished tasks and while cancelling", async () => {
+    const completedTask = { ...task, status: "completed" } as VideoTask
+    const { unmount } = render(<TaskActionsMenu task={completedTask} onDeleted={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "测试任务的操作菜单" }))
+    const idle = await screen.findByText("终止任务")
+    expect(idle.closest("[data-disabled]")).toBeInTheDocument()
+    unmount()
+
+    // 已经发出终止请求、流水线还在收尾时，重复点击没有意义。
+    const cancellingTask = {
+      ...task,
+      status: "running",
+      cancel_requested_at: "2026-10-15T21:40:00+08:00",
+    } as VideoTask
+    render(<TaskActionsMenu task={cancellingTask} onDeleted={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "测试任务的操作菜单" }))
+    const busy = await screen.findByText("正在终止…")
+    expect(busy.closest("[data-disabled]")).toBeInTheDocument()
   })
 })

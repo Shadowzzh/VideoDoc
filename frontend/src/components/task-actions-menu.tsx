@@ -1,6 +1,7 @@
-import { MoreHorizontalIcon, Trash2Icon } from "lucide-react"
+import { CircleStopIcon, MoreHorizontalIcon, Trash2Icon } from "lucide-react"
 import { useState } from "react"
 
+import { CancelTaskDialog } from "@/components/cancel-task-dialog"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,10 +27,13 @@ import type { TaskDeletionPreview, VideoTask } from "@/types"
 interface TaskActionsMenuProps {
   task: VideoTask
   onDeleted: () => void
+  /** 任务状态被本菜单改变后回调（如终止成功）；列表页靠轮询刷新，可以不传。 */
+  onChanged?: () => void
 }
 
-export function TaskActionsMenu({ task, onDeleted }: TaskActionsMenuProps) {
+export function TaskActionsMenu({ task, onDeleted, onChanged }: TaskActionsMenuProps) {
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [cancelOpen, setCancelOpen] = useState(false)
   const [preview, setPreview] = useState<TaskDeletionPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -38,6 +42,10 @@ export function TaskActionsMenu({ task, onDeleted }: TaskActionsMenuProps) {
   // "running" 正在写产物，移走目录会让流水线写盘失败，继续拦（与后端
   // task_store.DELETION_BLOCKED_STATUSES 保持一致）。
   const deletable = task.status !== "running"
+  // 只有「还没跑完」的任务有可终止的执行线程（与后端 CANCELABLE_STATUSES 一致）。
+  const cancelable = task.status === "running" || task.status === "queued"
+  // 已发出终止请求、但流水线还在收尾时，重复点击没有意义。
+  const cancelRequested = Boolean(task.cancel_requested_at)
 
   const openDeleteDialog = async () => {
     setDeleteOpen(true)
@@ -88,7 +96,14 @@ export function TaskActionsMenu({ task, onDeleted }: TaskActionsMenuProps) {
         >
           <MoreHorizontalIcon />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuContent align="end" className="w-44">
+          <DropdownMenuItem
+            disabled={!cancelable || cancelRequested}
+            onClick={() => setCancelOpen(true)}
+          >
+            <CircleStopIcon />
+            {cancelRequested ? "正在终止…" : "终止任务"}
+          </DropdownMenuItem>
           <DropdownMenuItem
             variant="destructive"
             disabled={!deletable}
@@ -146,6 +161,13 @@ export function TaskActionsMenu({ task, onDeleted }: TaskActionsMenuProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <CancelTaskDialog
+        task={task}
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        onCancelled={() => onChanged?.()}
+      />
     </>
   )
 }

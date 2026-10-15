@@ -5,6 +5,7 @@ import json
 import pytest
 
 from videodoc import settings as st
+from videodoc.cancellation import TaskCancellation, TaskCancelled
 from videodoc.capabilities import image_vision, registry
 from videodoc.integrations import vision_local, vision_remote
 
@@ -159,7 +160,7 @@ def test_run_fills_both_channels_and_consumes_quota(local_ready, remote_ready, t
     monkeypatch.setattr(
         vision_remote,
         "analyze",
-        lambda config, prompt, path: {"text": "画面是 K 线图", "model": "m1", "usage": {}, "elapsed_ms": 12},
+        lambda config, prompt, path, cancel=None: {"text": "画面是 K 线图", "model": "m1", "usage": {}, "elapsed_ms": 12},
     )
     images = [{"file": "a.jpg", "timestamp": "00:01"}, {"file": "b.jpg", "timestamp": "00:02"}]
     logs: list[str] = []
@@ -195,7 +196,7 @@ def test_run_marks_local_failure_without_stopping(remote_ready, tmp_path, monkey
     monkeypatch.setattr(
         vision_remote,
         "analyze",
-        lambda config, prompt, path: {"text": "云端仍然成功", "model": "m", "usage": {}, "elapsed_ms": 1},
+        lambda config, prompt, path, cancel=None: {"text": "云端仍然成功", "model": "m", "usage": {}, "elapsed_ms": 1},
     )
     script = tmp_path / "vision_ocr.swift"
     script.write_text("// stub", encoding="utf-8")
@@ -208,7 +209,7 @@ def test_run_marks_local_failure_without_stopping(remote_ready, tmp_path, monkey
 
 
 def test_run_marks_cloud_failure_without_stopping(remote_ready, tmp_path, monkeypatch):
-    def boom(config, prompt, path):
+    def boom(config, prompt, path, cancel=None):
         raise vision_remote.RemoteVisionError("HTTP 500: 上游挂了")
 
     monkeypatch.setattr(vision_remote, "analyze", boom)
@@ -223,7 +224,7 @@ def test_run_respects_daily_budget(remote_ready, tmp_path, monkeypatch):
     monkeypatch.setattr(
         vision_remote,
         "analyze",
-        lambda config, prompt, path: {"text": "x", "model": "m", "usage": {}, "elapsed_ms": 1},
+        lambda config, prompt, path, cancel=None: {"text": "x", "model": "m", "usage": {}, "elapsed_ms": 1},
     )
     settings = _settings(remote_ready, {"external": {"daily_budget": 0}})
     logs: list[str] = []
@@ -237,7 +238,7 @@ def test_run_respects_daily_budget(remote_ready, tmp_path, monkeypatch):
 def test_run_respects_max_frames(remote_ready, tmp_path, monkeypatch):
     calls = {"n": 0}
 
-    def fake_analyze(config, prompt, path):
+    def fake_analyze(config, prompt, path, cancel=None):
         calls["n"] += 1
         return {"text": "x", "model": "m", "usage": {}, "elapsed_ms": 1}
 
@@ -294,3 +295,31 @@ def test_evidence_text_labels_both_sources():
 
 def test_evidence_text_empty_for_image_without_evidence():
     assert image_vision.image_vision.evidence_text({"file": "a.jpg"}) == ""
+
+
+def test_run_stops_at_next_image_when_cancelled(remote_ready, tmp_path, monkeypatch):
+    """取消：不再处理后续图片，并把 TaskCancelled 抛给流水线。
+
+    必须抛出而不是降级成 ``vision_error``：用户主动终止不是能力失败。
+    """
+    cancel = TaskCancellation("20261015-211944-1749456d")
+    seen: list[str] = []
+
+    def fake_analyze(config, prompt, path, cancel=None):
+        seen.append(path.name)
+        cancel.request()  # 第一张之后用户点了终止
+        return {"text": "x", "model": "m", "usage": {}, "elapsed_ms": 1}
+
+    monkeypatch.setattr(vision_remote, "analyze", fake_analyze)
+
+    with pytest.raises(TaskCancelled):
+        image_vision.image_vision.run(
+            _settings(remote_ready),
+            [{"file": "a.jpg"}, {"file": "b.jpg"}],
+            frame_dir=tmp_path,
+            log=lambda message: None,
+            task_dir=_task_dir(tmp_path),
+            cancel=cancel,
+        )
+
+    assert seen == ["a.jpg"]

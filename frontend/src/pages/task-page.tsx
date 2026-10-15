@@ -1,7 +1,8 @@
-import { ArrowRightIcon, ChevronRightIcon, ClockIcon, ExternalLinkIcon, FileIcon, RotateCcwIcon, TerminalIcon, TimerIcon } from "lucide-react"
+import { ArrowRightIcon, ChevronRightIcon, CircleStopIcon, ClockIcon, ExternalLinkIcon, FileIcon, RotateCcwIcon, TerminalIcon, TimerIcon } from "lucide-react"
 import { useState } from "react"
 
 import { AppShell } from "@/components/app-shell"
+import { CancelTaskDialog } from "@/components/cancel-task-dialog"
 import { ErrorState } from "@/components/error-state"
 import { StatusBadge } from "@/components/status-badge"
 import { TaskActionsMenu } from "@/components/task-actions-menu"
@@ -23,6 +24,7 @@ export function TaskPage({ taskId }: { taskId: string }) {
   const [selectedStepKey, setSelectedStepKey] = useState<string | null>(null)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
+  const [cancelOpen, setCancelOpen] = useState(false)
   const selectedStep = task?.steps.find((step) => step.key === selectedStepKey) || null
   // 运行中按秒重算已耗时；任务结束后停掉定时器，避免页面白页重渲染。
   const now = useNow(task?.status === "running" || task?.status === "queued")
@@ -73,9 +75,20 @@ export function TaskPage({ taskId }: { taskId: string }) {
                         {resuming ? "正在恢复" : "重试当前阶段"}
                       </Button>
                     ) : null}
+                    {task.status === "running" || task.status === "queued" ? (
+                      <Button
+                        variant="outline"
+                        disabled={Boolean(task.cancel_requested_at)}
+                        onClick={() => setCancelOpen(true)}
+                      >
+                        <CircleStopIcon />
+                        {task.cancel_requested_at ? "正在终止…" : "终止任务"}
+                      </Button>
+                    ) : null}
                     <TaskActionsMenu
                       task={task}
                       onDeleted={() => window.location.assign("/app/")}
+                      onChanged={refresh}
                     />
                   </div>
                 </div>
@@ -92,6 +105,18 @@ export function TaskPage({ taskId }: { taskId: string }) {
                 />
               ) : null}
               {resumeError ? <ErrorState title="恢复失败" message={resumeError} /> : null}
+              {task.status === "cancelled" ? (
+                <ErrorState
+                  tone="neutral"
+                  icon={<CircleStopIcon className="size-4" />}
+                  title="任务已取消"
+                  message={
+                    task.resume_from
+                      ? `已完成的阶段产物保留，可从「${task.resume_from.label}」继续。`
+                      : "已完成的阶段产物保留。"
+                  }
+                />
+              ) : null}
 
               <section className="space-y-3">
                 <div><h2 className="text-lg font-semibold">处理流水线</h2><p className="text-sm text-muted-foreground">点击步骤查看命令、产物和完整日志。</p></div>
@@ -134,6 +159,15 @@ export function TaskPage({ taskId }: { taskId: string }) {
           {selectedStep ? <StepDetails step={selectedStep} now={now} /> : null}
         </SheetContent>
       </Sheet>
+
+      {task ? (
+        <CancelTaskDialog
+          task={task}
+          open={cancelOpen}
+          onOpenChange={setCancelOpen}
+          onCancelled={refresh}
+        />
+      ) : null}
     </AppShell>
   )
 }

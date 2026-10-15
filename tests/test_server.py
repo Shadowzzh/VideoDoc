@@ -333,3 +333,69 @@ def test_settings_test_endpoint_reports_missing_channel(app, client, tmp_path, m
 
     assert response.status_code == 400
     assert response.get_json()["ok"] is False
+
+
+def test_cancel_rejects_unknown_task(client):
+    response = client.post("/api/tasks/20260101-000000-00000000/cancel")
+
+    assert response.status_code == 404
+
+
+def test_cancel_queued_task_settles_as_cancelled(client, app):
+    store = app.extensions["task_store"]
+    task = store.create("https://example.com/video")
+
+    response = client.post(f"/api/tasks/{task['id']}/cancel")
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload["status"] == "cancelled"
+    assert payload["cancel_requested_at"]
+    # 等待中的任务没有子进程可杀。
+    assert payload["terminated_pids"] == []
+    assert store.get(task["id"])["status"] == "cancelled"
+
+
+def test_cancel_running_task_flags_without_overwriting_status(client, app):
+    store = app.extensions["task_store"]
+    task = store.create("https://example.com/video")
+    store.update(task["id"], status="running")
+    store.start_attempt(task["id"], "probe")
+
+    response = client.post(f"/api/tasks/{task['id']}/cancel")
+
+    assert response.status_code == 202
+    # 状态由流水线线程收敛：接口只登记取消请求，不抢写状态。
+    assert response.get_json()["status"] == "running"
+    assert store.get(task["id"])["cancel_requested_at"]
+    # 终止事件要写进正在跑的那个阶段日志，否则页面上看不到任何痕迹。
+    assert "用户请求终止任务" in store.log_tail(task["id"], "probe")
+
+
+def test_cancel_rejects_finished_task(client, app):
+    store = app.extensions["task_store"]
+    task = store.create("https://example.com/video")
+    store.update(task["id"], status="completed")
+
+    response = client.post(f"/api/tasks/{task['id']}/cancel")
+
+    assert response.status_code == 409
+    assert "等待中或运行中" in response.get_json()["error"]
+    assert store.get(task["id"])["status"] == "completed"
+
+
+def test_resume_accepts_cancelled_task_and_resets_cancellation(client, app):
+    store = app.extensions["task_store"]
+    task = store.create("https://example.com/video")
+    store.update(task["id"], status="running")
+    store.start_attempt(task["id"], "probe")
+    client.post(f"/api/tasks/{task['id']}/cancel")
+    store.update(task["id"], status="cancelled", finished_at="2026-10-15T21:40:00+08:00")
+
+    response = client.post(f"/api/tasks/{task['id']}/resume")
+
+    assert response.status_code == 202
+    assert response.get_json()["resume_from"] == "probe"
+    resumed = store.get(task["id"])
+    assert resumed["status"] == "queued"
+    assert resumed["cancel_requested_at"] is None

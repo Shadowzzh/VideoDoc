@@ -21,6 +21,13 @@ TASK_SCHEMA_VERSION = 4
 # 移走目录会让流水线在写盘时炸掉，所以继续拦。
 DELETION_BLOCKED_STATUSES = frozenset({"running"})
 
+# 可以请求终止的状态：``queued`` 还没轮上（直接落 cancelled），``running`` 正在跑
+# （打标记 + 杀子进程，由流水线自己把状态收敛成 cancelled）。
+CANCELABLE_STATUSES = frozenset({"queued", "running"})
+
+# 可以「继续」的状态：失败、服务重启导致的中断、以及用户主动取消。
+RESUMABLE_STATUSES = frozenset({"failed", "interrupted", "cancelled"})
+
 # 性能指标明细：append-only 事件流，每行一个 JSON 对象。
 # 放在任务目录根部，不写进 task.json，避免高频事件（如子进程心跳）反复重写状态文件。
 METRICS_FILENAME = "metrics.jsonl"
@@ -241,8 +248,8 @@ class TaskStore:
         """原子地把暂停任务放回队列，避免重复点击创建多个执行线程。"""
         with self._lock:
             task = self.get(task_id)
-            if task.get("status") not in {"failed", "interrupted"}:
-                raise TaskStateError("只有失败或中断的任务可以继续。")
+            if task.get("status") not in RESUMABLE_STATUSES:
+                raise TaskStateError("只有失败、中断或已取消的任务可以继续。")
             resume_step = self._resume_step(task)
             if resume_step is None:
                 raise TaskStateError("任务没有可继续的阶段。")
@@ -255,6 +262,9 @@ class TaskStore:
             task["error"] = None
             task["finished_at"] = None
             task["updated_at"] = now
+            # 上一次的取消请求到此为止：不清掉的话，重新排队的任务会被新线程立刻
+            # 当成「已被取消」而直接退出。
+            task["cancel_requested_at"] = None
             task["resume_count"] = int(task.get("resume_count", 0)) + 1
             task["resume_from"] = step_key
             resume_step["status"] = "pending"
@@ -262,6 +272,35 @@ class TaskStore:
             resume_step["error"] = None
             self._write(task)
             return copy.deepcopy(task)
+
+    def request_cancel(self, task_id: str) -> dict[str, Any]:
+        """登记取消请求（原子）。
+
+        ``queued`` 直接落到 ``cancelled``：它没有在跑的进程，也没有半成品需要流水线
+        收尾。``running`` 只打标记、**不改状态** —— 状态由流水线在自己的检查点收敛成
+        ``cancelled``，否则会与流水线的写盘竞争，出现「已取消又被写回运行中」。
+        """
+        with self._lock:
+            task = self.get(task_id)
+            status = task.get("status")
+            if status not in CANCELABLE_STATUSES:
+                raise TaskStateError("只有等待中或运行中的任务可以终止。")
+            now = utc_now()
+            task["cancel_requested_at"] = now
+            task["updated_at"] = now
+            if status == "queued":
+                task["status"] = "cancelled"
+                task["finished_at"] = now
+            self._write(task)
+            return copy.deepcopy(task)
+
+    def running_step_key(self, task_id: str) -> str | None:
+        """当前正在执行的阶段 key（没有则返回 None）；用于把终止事件写进对应日志。"""
+        task = self.get(task_id)
+        for step in task["steps"]:
+            if step.get("status") == "running":
+                return str(step["key"])
+        return None
 
     def deletion_preview(self, task_id: str) -> dict[str, Any]:
         with self._lock:
@@ -457,7 +496,7 @@ class TaskStore:
             self._attach_heartbeats(task, self.read_metrics(task_id))
         resume_step = self._resume_step(task)
         task["can_resume"] = (
-            task.get("status") in {"failed", "interrupted"} and resume_step is not None
+            task.get("status") in RESUMABLE_STATUSES and resume_step is not None
         )
         if task["can_resume"]:
             task["resume_from"] = {
@@ -478,6 +517,9 @@ class TaskStore:
             task["error"] = "服务在任务执行期间重启，可从中断阶段继续。"
             task["finished_at"] = now
             task["updated_at"] = now
+            # 重启后原来的取消请求已经没有意义（进程全没了）：留着会让页面一直
+            # 显示「正在终止」，也会让重新排队的任务被误判成已取消。
+            task["cancel_requested_at"] = None
             for step in task["steps"]:
                 if step["status"] == "running":
                     step["status"] = "interrupted"
@@ -495,6 +537,7 @@ class TaskStore:
         normalized.setdefault("resume_count", 0)
         normalized.setdefault("resume_from", None)
         normalized.setdefault("article_title", None)
+        normalized.setdefault("cancel_requested_at", None)
         for step in normalized.get("steps", []):
             attempts = step.get("attempts")
             if not isinstance(attempts, list):

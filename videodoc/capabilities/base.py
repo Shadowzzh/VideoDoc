@@ -113,8 +113,15 @@ class Capability(Protocol):
         frame_dir,
         log: Callable[[str], None],
         task_dir,
+        cancel=None,
     ) -> Evidence:
-        """执行一次，返回产物。任何失败都要非阻塞降级，不得抛出让任务失败。"""
+        """执行一次，返回产物。任何失败都要非阻塞降级，不得抛出让任务失败。
+
+        ``cancel`` 是可选的 ``videodoc.cancellation.TaskCancellation``：能力应该在
+        「每张图之前」和「限流等待时」检查它（``cancel.raise_if_requested()`` /
+        ``cancel.sleep(seconds)``）。它是本协议里**唯一**允许向上抛的异常来源
+        （``TaskCancelled``）—— 用户主动终止不算能力失败。
+        """
 
 
 class Registry:

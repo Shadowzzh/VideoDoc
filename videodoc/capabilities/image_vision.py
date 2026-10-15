@@ -19,6 +19,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
+from ..cancellation import TaskCancellation
 from ..integrations import vision_local, vision_remote
 from ..integrations.vision_remote import PROTOCOLS, RemoteVisionConfig
 from .base import Availability, Evidence, Field, FieldGroup, StepSpec, registry
@@ -404,6 +405,7 @@ class ImageVisionCapability:
         frame_dir: Path,
         log: Callable[[str], None],
         task_dir: Path,
+        cancel: TaskCancellation | None = None,
     ) -> Evidence:
         resolved = resolve_engine(settings)
         log(f"图像证据通道：{resolved}")
@@ -436,6 +438,10 @@ class ImageVisionCapability:
         external_done = 0
         last_external_at = 0.0
         for image in images:
+            # 图像识别是逐张串行的，每张之前都是安全的取消点；单张最长可跑
+            # 300 秒（云端超时），所以检查点必须细到「张」。
+            if cancel is not None:
+                cancel.raise_if_requested()
             current = dict(image)
             frame_path = frame_dir / str(current.get("file", ""))
             if local_config is not None:
@@ -461,10 +467,15 @@ class ImageVisionCapability:
                         if wait > 0:
                             # 限流等待不是模型慢，必须与真正的调用耗时分开计。
                             wait_ms = int(wait * 1000)
-                            time.sleep(wait)
+                            if cancel is not None:
+                                cancel.sleep(wait)
+                            else:
+                                time.sleep(wait)
                     started = time.monotonic()
                     try:
-                        result = vision_remote.analyze(remote_config, prompt, frame_path)
+                        result = vision_remote.analyze(
+                            remote_config, prompt, frame_path, cancel=cancel
+                        )
                     except (vision_remote.RemoteVisionError, OSError) as error:
                         current["vision_error"] = str(error)
                         if wait_ms:

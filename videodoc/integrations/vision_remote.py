@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..cancellation import TaskCancellation, run_interruptible
+
 PROTOCOLS: tuple[str, ...] = (
     "openai-chat",
     "openai-responses",
@@ -297,10 +299,16 @@ def _http_json(
     method: str = "POST",
     body: bytes | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    cancel: "TaskCancellation | None" = None,
 ) -> dict[str, Any]:
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read().decode("utf-8", errors="replace")
+
+    def call() -> str:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+
+    # 单次云端视觉可等 300 秒；走可中断调用，取消不必等它自己超时。
+    raw = run_interruptible(cancel, call)
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as error:
@@ -320,6 +328,7 @@ def analyze(
     config: RemoteVisionConfig,
     prompt: str,
     image_path: Path,
+    cancel: "TaskCancellation | None" = None,
 ) -> dict[str, Any]:
     """调用一次远端视觉：返回 ``{text, model, usage, elapsed_ms, endpoint}``。"""
     image_bytes, media_type = read_image(Path(image_path))
@@ -333,9 +342,19 @@ def analyze(
     started = time.monotonic()
     for attempt in range(max(config.retries, 0) + 1):
         if attempt:
-            time.sleep(min(2 ** attempt, 5))
+            delay = min(2 ** attempt, 5)
+            if cancel is not None:
+                cancel.sleep(delay)
+            else:
+                time.sleep(delay)
         try:
-            parsed = _http_json(url, headers=headers, body=body, timeout=config.timeout_seconds)
+            parsed = _http_json(
+                url,
+                headers=headers,
+                body=body,
+                timeout=config.timeout_seconds,
+                cancel=cancel,
+            )
         except urllib.error.HTTPError as error:
             detail = _redact(error.read().decode("utf-8", errors="replace")[:600], api_key)
             message = f"HTTP {error.code}: {detail}"

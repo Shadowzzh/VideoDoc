@@ -1,5 +1,5 @@
 export type TaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted"
-export type StepStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "interrupted"
+export type StepStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "interrupted" | "cancelled"
 
 export interface TaskMetadata {
   id?: string
@@ -139,6 +139,8 @@ export interface VideoTask {
   resume_count: number
   can_resume: boolean
   resume_from: ResumeStep | null
+  /** 用户请求终止的时刻；运行中的任务会先出现它，随后状态才收敛成 cancelled。 */
+  cancel_requested_at?: string | null
   steps: TaskStep[]
   progress: TaskProgress
 }

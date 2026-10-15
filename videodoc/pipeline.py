@@ -26,6 +26,7 @@ import markdown
 
 from . import capabilities as capability_registry
 from . import settings as settings_module
+from .cancellation import TaskCancellation, TaskCancelled, run_interruptible
 from .integrations.frames import FramesError, extract_frames
 from .integrations.transcribe import TranscribeError, transcribe
 from .task_store import TaskStore, utc_now
@@ -365,10 +366,18 @@ def write_json_atomic(path: Path, payload: Any) -> None:
 class VideoArticlePipeline:
     """顺序执行任务，并将每一步状态持久化到 TaskStore。"""
 
-    def __init__(self, store: TaskStore, task_id: str, config: PipelineConfig):
+    def __init__(
+        self,
+        store: TaskStore,
+        task_id: str,
+        config: PipelineConfig,
+        cancellation: TaskCancellation | None = None,
+    ):
         self.store = store
         self.task_id = task_id
         self.config = config
+        # 没有外部取消信号时给一个永不触发的实例：流水线仍然可以被独立调用和测试。
+        self.cancel = cancellation or TaskCancellation(task_id)
         self.task_dir = store.task_dir(task_id)
         self.task = store.get(task_id)
         self._active_attempts: dict[str, int] = {}
@@ -472,6 +481,10 @@ class VideoArticlePipeline:
 
     def run(self, start_at: str | None = None) -> None:
         self.task = self.store.get(self.task_id)
+        # 取消可能发生在排队期间：worker 真正拿到任务时先确认它还没被取消，否则会把
+        # 「已取消」的任务又跑起来，并把状态写回 running。
+        if self.task.get("status") == "cancelled":
+            return
         start_index = self._start_index(start_at)
         original_started_at = self.task.get("started_at")
         started_at = original_started_at or utc_now()
@@ -533,6 +546,17 @@ class VideoArticlePipeline:
                         article,
                     ),
                 )
+            # 取消与完成之间不留窗口：否则用户刚点完终止，状态却变成「已完成」。
+            self.cancel.raise_if_requested()
+        except TaskCancelled:
+            # 取消只改状态，不删产物：已完成的阶段下次可以直接复用。
+            self.store.update(
+                self.task_id,
+                status="cancelled",
+                error=None,
+                finished_at=utc_now(),
+            )
+            return
         except Exception as error:
             self.store.update(
                 self.task_id,
@@ -550,8 +574,8 @@ class VideoArticlePipeline:
 
     def resume_step(self) -> str:
         self.task = self.store.get(self.task_id)
-        if self.task.get("status") not in {"failed", "interrupted"}:
-            raise PipelineError("只有失败或中断的任务可以继续。")
+        if self.task.get("status") not in {"failed", "interrupted", "cancelled"}:
+            raise PipelineError("只有失败、中断或已取消的任务可以继续。")
         for index, step in enumerate(self.task["steps"]):
             if step["status"] in {"completed", "skipped"}:
                 continue
@@ -697,6 +721,9 @@ class VideoArticlePipeline:
         return tuple((step["key"], step["label"]) for step in self.task["steps"])
 
     def _step(self, key: str, action: Callable[[], Any]) -> Any:
+        # 阶段边界是最可靠的取消检查点：子进程被杀之后，流水线在这里停下，
+        # 不会再启动下一个阶段。
+        self.cancel.raise_if_requested()
         attempt_number = self.store.start_attempt(self.task_id, key)
         self._active_attempts[key] = attempt_number
         self.store.append_log(
@@ -707,6 +734,23 @@ class VideoArticlePipeline:
         )
         try:
             result = action()
+        except TaskCancelled:
+            # 取消不是失败：尝试与阶段都记 cancelled，页面才不会弹失败横幅。
+            self.store.append_log(
+                self.task_id,
+                key,
+                "用户终止任务，阶段已取消",
+                attempt_number,
+            )
+            self.store.finish_attempt(
+                self.task_id,
+                key,
+                attempt_number,
+                status="cancelled",
+                error="用户终止任务",
+            )
+            self._active_attempts.pop(key, None)
+            raise
         except Exception as error:
             self.store.append_log(
                 self.task_id,
@@ -832,7 +876,11 @@ class VideoArticlePipeline:
             encoding="utf-8",
             errors="replace",
             env=env if env is not None else os.environ.copy(),
+            # 独立会话 = 独立进程组：取消时只杀这个子进程组（含它自己拉起的 ffmpeg），
+            # 不会波及服务自身。历史上子进程与服务同组，killpg 会把服务一起带走。
+            start_new_session=True,
         )
+        self.cancel.register(process)
         heartbeat_stop = self._start_heartbeat(step, process, started)
         return_code: int | None = None
         output = ""
@@ -863,7 +911,12 @@ class VideoArticlePipeline:
                 output = "".join(lines)
         finally:
             heartbeat_stop.set()
+            self.cancel.unregister(process)
             self._record_command_metric(step, command, started, started_at, return_code)
+        # 子进程被取消杀掉时退出码是负数（-15 / -9），必须优先按「取消」处理，
+        # 否则会退化成一条看不懂的「命令退出码 -15」失败信息。
+        if self.cancel.requested():
+            raise TaskCancelled(f"用户终止任务（{self._command_label(command)} 已停止）")
         if return_code != 0:
             raise PipelineError(f"命令退出码 {return_code}: {shlex.join(command)}")
         return output
@@ -1267,13 +1320,18 @@ class VideoArticlePipeline:
         last_error: PipelineError | None = None
         response_body: str | None = None
         for attempt in range(max_retries + 1):
+            self.cancel.raise_if_requested()
             attempt_started = time.monotonic()
             try:
-                with urllib.request.urlopen(
-                    request,
-                    timeout=self.config.llm_timeout_seconds,
-                ) as response:
-                    response_body = response.read().decode("utf-8")
+                def call() -> str:
+                    with urllib.request.urlopen(
+                        request,
+                        timeout=self.config.llm_timeout_seconds,
+                    ) as response:
+                        return response.read().decode("utf-8")
+
+                # 模型等待最长 600 秒；放到可中断的调用里，取消才不需要等它自己超时。
+                response_body = run_interruptible(self.cancel, call)
                 attempts.append(
                     {
                         "attempt": attempt + 1,
@@ -1325,7 +1383,8 @@ class VideoArticlePipeline:
                         step,
                         f"LLM 请求失败（{error}），{delay} 秒后重试 ({attempt + 1}/{max_retries})",
                     )
-                    time.sleep(delay)
+                    # 退避也是等待：取消时不应该还要把 3+6+9 秒睡完。
+                    self.cancel.sleep(delay)
                     continue
                 self._record_llm_metric(
                     step,
@@ -1559,6 +1618,7 @@ class VideoArticlePipeline:
             )
 
         def action() -> list[dict[str, Any]]:
+            self.cancel.raise_if_requested()
             started = time.monotonic()
             evidence = capability.run(
                 capability_settings,
@@ -1568,6 +1628,7 @@ class VideoArticlePipeline:
                     self.task_id, IMAGE_EVIDENCE_STEP, message
                 ),
                 task_dir=self.task_dir,
+                cancel=self.cancel,
             )
             persisted = self._persist_ocr_images(
                 evidence.images, artifact_key=artifact_key, filename=filename
@@ -1993,6 +2054,7 @@ def run_pipeline(
     task_id: str,
     config: PipelineConfig,
     start_at: str | None = None,
+    cancellation: TaskCancellation | None = None,
 ) -> None:
-    pipeline = VideoArticlePipeline(store, task_id, config)
+    pipeline = VideoArticlePipeline(store, task_id, config, cancellation=cancellation)
     pipeline.run(start_at=start_at)

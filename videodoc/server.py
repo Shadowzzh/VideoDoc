@@ -21,6 +21,7 @@ from flask import (
 
 from . import capabilities as capability_registry
 from . import settings as settings_module
+from .cancellation import CancellationRegistry, TaskCancellation
 from .pipeline import PipelineConfig, PipelineError, prepare_resume, run_pipeline
 from .task_store import TaskConfirmationError, TaskStateError, TaskStore
 
@@ -143,9 +144,33 @@ def create_app(config: dict | None = None) -> Flask:
         thread_name_prefix="videodoc-pipeline",
     )
     pipeline_config = PipelineConfig.from_environment()
+    # 取消信号按任务保存：HTTP 线程负责置信号 + 杀子进程，流水线线程在检查点自己停下。
+    cancellations = CancellationRegistry()
     app.extensions["task_store"] = store
     app.extensions["task_executor"] = executor
     app.extensions["pipeline_config"] = pipeline_config
+    app.extensions["cancellations"] = cancellations
+
+    def submit_pipeline(
+        task_id: str,
+        cancellation: TaskCancellation,
+        start_at: str | None = None,
+    ) -> None:
+        """把任务交给线程池，并在流水线结束后回收取消信号。"""
+
+        def job() -> None:
+            try:
+                run_pipeline(
+                    store,
+                    task_id,
+                    pipeline_config,
+                    start_at,
+                    cancellation=cancellation,
+                )
+            finally:
+                cancellations.discard(task_id)
+
+        executor.submit(job)
 
     @app.get("/")
     def index():
@@ -180,7 +205,7 @@ def create_app(config: dict | None = None) -> Flask:
             return jsonify({"error": "请输入有效的 http:// 或 https:// 视频链接。"}), 400
         task = store.create(source_url)
         if app.config["START_BACKGROUND_TASKS"]:
-            executor.submit(run_pipeline, store, task["id"], pipeline_config)
+            submit_pipeline(task["id"], cancellations.for_task(task["id"]))
         return jsonify({"id": task["id"], "url": f"/app/tasks/{task['id']}"}), 202
 
     @app.get("/api/settings")
@@ -287,14 +312,44 @@ def create_app(config: dict | None = None) -> Flask:
         except (PipelineError, TaskStateError) as error:
             return jsonify({"error": str(error)}), 409
         if app.config["START_BACKGROUND_TASKS"]:
-            executor.submit(
-                run_pipeline,
-                store,
-                task_id,
-                pipeline_config,
-                step_key,
-            )
+            # 换一个新的取消信号：上一次取消留下的信号（以及它还没结束的调用线程）
+            # 不能传染给这一次执行。
+            submit_pipeline(task_id, cancellations.reset(task_id), step_key)
         return jsonify({"id": task_id, "resume_from": step_key}), 202
+
+    @app.post("/api/tasks/<task_id>/cancel")
+    def cancel_task_api(task_id: str):
+        """终止等待中或运行中的任务。
+
+        分工：这里（HTTP 线程）只做「登记 + 杀进程」，状态收敛交给流水线线程。
+        等待中的任务没有进程，直接落 cancelled；运行中的任务会先回 202，页面轮询到
+        ``cancelled`` 为止 —— 中间状态是 ``cancel_requested_at`` 非空。
+        """
+        try:
+            task = store.request_cancel(task_id)
+        except KeyError:
+            abort(404)
+        except TaskStateError as error:
+            return jsonify({"error": str(error)}), 409
+        cancellation = cancellations.for_task(task_id)
+        cancellation.request()
+        terminated = cancellation.terminate()
+        step_key = store.running_step_key(task_id)
+        if step_key is not None:
+            store.append_log(
+                task_id,
+                step_key,
+                "用户请求终止任务"
+                + (f"，已停止子进程 {terminated}" if terminated else "（当前阶段无可停止的子进程）"),
+            )
+        return jsonify(
+            {
+                "id": task_id,
+                "status": task["status"],
+                "cancel_requested_at": task["cancel_requested_at"],
+                "terminated_pids": terminated,
+            }
+        ), 202
 
     @app.get("/tasks/<task_id>/result")
     def task_result(task_id: str):

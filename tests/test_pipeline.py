@@ -1,12 +1,16 @@
 import json
 import io
+import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 from pathlib import Path
 
 import pytest
+
+from videodoc.cancellation import TaskCancellation, TaskCancelled
 
 from videodoc.pipeline import (
     PipelineConfig,
@@ -505,7 +509,8 @@ def test_call_llm_retries_once_on_transient_error(tmp_path, monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    monkeypatch.setattr("time.sleep", fake_sleep)
+    # 退避现在走 TaskCancellation.sleep（可被取消打断），不再是裸 time.sleep。
+    monkeypatch.setattr(TaskCancellation, "sleep", lambda self, seconds: fake_sleep(seconds))
 
     result = pipeline._call_llm("outline", [{"role": "user", "content": "hi"}])
 
@@ -538,7 +543,7 @@ def test_call_llm_gives_up_after_retries(tmp_path, monkeypatch):
         raise urllib.error.URLError("boom")
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    monkeypatch.setattr("time.sleep", fake_sleep)
+    monkeypatch.setattr(TaskCancellation, "sleep", lambda self, seconds: fake_sleep(seconds))
 
     with pytest.raises(PipelineError) as error:
         pipeline._call_llm("outline", [{"role": "user", "content": "hi"}])
@@ -846,3 +851,130 @@ def test_long_command_emits_heartbeats(tmp_path):
     assert events[0]["step"] == "frames"
     assert events[0]["pid"] == process.pid
     assert events[0]["elapsed_ms"] >= 0
+
+
+def test_run_command_starts_child_in_its_own_process_group(tmp_path):
+    """子进程必须自成一个进程组。
+
+    历史实现里 yt-dlp/ffmpeg 与服务同组（实测 pgid 就是服务 PID），那时 ``killpg``
+    会把服务自己一起杀掉。这个用例是那条约束的回归防线。
+    """
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    pipeline = VideoArticlePipeline(store, task["id"], PipelineConfig())
+
+    output = pipeline._run_command(
+        "download",
+        [sys.executable, "-c", "import os; print(os.getpid(), os.getpgid(0))"],
+    )
+
+    pid, group = (int(value) for value in output.split())
+    assert group == pid
+    assert group != os.getpgid(0)
+
+
+def test_run_command_reports_cancellation_not_a_negative_exit_code(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    cancel = TaskCancellation(task["id"])
+    pipeline = VideoArticlePipeline(
+        store, task["id"], PipelineConfig(), cancellation=cancel
+    )
+
+    def cancel_soon():
+        time.sleep(0.4)
+        cancel.request()
+        cancel.terminate(grace_seconds=1.0)
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+
+    started = time.monotonic()
+    with pytest.raises(TaskCancelled):
+        pipeline._run_command(
+            "download",
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+        )
+
+    # 子进程被杀后退出码是 -15：必须优先判「取消」，否则会退化成看不懂的失败信息。
+    assert time.monotonic() - started < 15
+    assert "$ " in store.log_tail(task["id"], "download")
+
+
+def test_cancelled_run_keeps_upstream_artifacts_and_never_completes(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    cancel = TaskCancellation(task["id"])
+
+    class SlowPipeline(VideoArticlePipeline):
+        def _probe(self):
+            return {"title": "测试视频", "extractor": "test"}
+
+        def _download(self):
+            self._run_command(
+                "download",
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+            )
+            raise AssertionError("命令不应该跑到正常结束")
+
+    pipeline = SlowPipeline(store, task["id"], PipelineConfig(), cancellation=cancel)
+
+    def cancel_soon():
+        time.sleep(0.4)
+        cancel.request()
+        cancel.terminate(grace_seconds=1.0)
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    pipeline.run()
+
+    cancelled = store.get(task["id"])
+    assert cancelled["status"] == "cancelled"
+    # 取消不是失败：不能弹失败横幅，也不能把任务标成 failed。
+    assert cancelled["error"] is None
+    assert cancelled["finished_at"] is not None
+    # 上游产物保留：取消的下一步可以直接复用，不必重新跑 probe。
+    assert cancelled["steps"][0]["status"] == "completed"
+    assert cancelled["steps"][1]["status"] == "cancelled"
+    assert cancelled["steps"][1]["attempts"][-1]["status"] == "cancelled"
+    public = store.public(task["id"])
+    assert public["can_resume"] is True
+    assert public["resume_from"]["key"] == "download"
+
+
+def test_run_exits_immediately_when_task_was_cancelled_while_queued(tmp_path):
+    """排队期间被取消：worker 真正拿到任务时不能再把它跑起来。"""
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    store.request_cancel(task["id"])
+
+    class ExplodingPipeline(VideoArticlePipeline):
+        def _probe(self):
+            raise AssertionError("已取消的任务不该开始执行")
+
+    ExplodingPipeline(store, task["id"], PipelineConfig()).run()
+
+    assert store.get(task["id"])["status"] == "cancelled"
+
+
+def test_call_llm_wait_is_interruptible(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIDEODOC_FAKE_LLM", raising=False)
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-key")
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    cancel = TaskCancellation(task["id"])
+    pipeline = VideoArticlePipeline(
+        store, task["id"], PipelineConfig(), cancellation=cancel
+    )
+
+    def slow_urlopen(request, timeout=None):
+        time.sleep(30)
+        raise AssertionError("不该等到这里")
+
+    monkeypatch.setattr("urllib.request.urlopen", slow_urlopen)
+    threading.Timer(0.3, cancel.request).start()
+
+    started = time.monotonic()
+    with pytest.raises(TaskCancelled):
+        pipeline._call_llm("outline", [{"role": "user", "content": "hi"}])
+
+    # 模型等待最长 600 秒：取消必须在秒级生效，而不是等它自己超时。
+    assert time.monotonic() - started < 10
