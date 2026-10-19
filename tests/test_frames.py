@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from videodoc.integrations import frames as frames_module
+from videodoc.integrations import crv_cli, frames as frames_module
 from videodoc.integrations.frames import (
     CONTACT_SHEET_NAME,
     FramesError,
@@ -85,7 +85,23 @@ def test_crv_command_respects_environment_override(
     monkeypatch.setenv("VIDEODOC_CRV", "/custom/crv")
     assert crv_command() == ["/custom/crv"]
     monkeypatch.delenv("VIDEODOC_CRV")
-    assert crv_command()[1:] == ["-m", "claude_real_video"]
+    assert crv_command()[1:] == ["-m", "videodoc.integrations.crv_cli"]
+
+
+def test_crv_cli_disables_temporal_check() -> None:
+    from claude_real_video import temporal_check
+
+    original = temporal_check.temporal_hint
+
+    def unexpected_scan(video_path: object, ffmpeg: str = "ffmpeg") -> None:
+        raise AssertionError(f"不应扫描 {video_path}（{ffmpeg}）")
+
+    try:
+        temporal_check.temporal_hint = unexpected_scan
+        crv_cli.disable_temporal_check()
+        assert temporal_check.temporal_hint("unused.mp4") is None
+    finally:
+        temporal_check.temporal_hint = original
 
 
 def test_extract_frames_collects_artifacts(tmp_path: Path, video: Path) -> None:

@@ -44,13 +44,14 @@ class FramesError(RuntimeError):
 def crv_command() -> list[str]:
     """返回 crv 的命令前缀。
 
-    默认用当前解释器执行 ``python -m claude_real_video``，不依赖 PATH；
+    默认用当前解释器执行 VideoDoc 的 CRV 包装器：它保留第三方 CLI 行为，
+    但跳过与文章配图无关、会再次全量扫描视频的 temporal check。
     可用 ``VIDEODOC_CRV`` 覆盖为自定义二进制。
     """
     override = os.environ.get("VIDEODOC_CRV")
     if override:
         return [override]
-    return [sys.executable, "-m", "claude_real_video"]
+    return [sys.executable, "-m", "videodoc.integrations.crv_cli"]
 
 
 def build_command(
