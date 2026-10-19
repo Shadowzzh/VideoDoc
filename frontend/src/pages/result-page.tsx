@@ -11,12 +11,12 @@ import {
   PauseIcon,
   PlayIcon,
   VideoIcon,
-  XIcon,
 } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type RefObject } from "react"
 
 import { AppShell } from "@/components/app-shell"
 import { ErrorState } from "@/components/error-state"
+import { FloatingVideoAssistant } from "@/components/floating-video-assistant"
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -118,10 +118,10 @@ export function ResultPage({ taskId }: { taskId: string }) {
       if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
         return
       }
-      if (isEditableTarget(event.target)) {
-        return
-      }
-      if (event.code === "KeyK") {
+      if (event.code === "Space") {
+        if (isSpaceShortcutBlockedTarget(event.target)) {
+          return
+        }
         event.preventDefault()
         const video = videoRef.current
         if (!video) {
@@ -133,6 +133,9 @@ export function ResultPage({ taskId }: { taskId: string }) {
         } else {
           video.pause()
         }
+        return
+      }
+      if (isTextEditingTarget(event.target)) {
         return
       }
       if (event.code === "KeyV") {
@@ -405,7 +408,7 @@ function ResultHeader({
             <Button variant="outline" size="sm" onClick={onTogglePlayback}>
               <PlaybackIcon />
               {playbackLabel}
-              <ShortcutKey>K</ShortcutKey>
+              <ShortcutKey>Space</ShortcutKey>
             </Button>
             <Button variant="outline" size="sm" onClick={onToggleVideoSize}>
               <SizeIcon />
@@ -525,70 +528,6 @@ interface VideoAssistantProps {
   videoRef: RefObject<HTMLVideoElement | null>
 }
 
-function FloatingVideoAssistant({
-  taskId,
-  result,
-  currentSection,
-  videoRef,
-  visible,
-  expanded,
-  onToggleSize,
-  onHide,
-}: VideoAssistantProps & {
-  visible: boolean
-  expanded: boolean
-  onToggleSize: () => void
-  onHide: () => void
-}) {
-  let containerClass = "fixed bottom-4 right-4 z-40 w-[min(22.5rem,calc(100vw-2rem))] transition-all duration-200"
-  if (expanded) {
-    containerClass = "fixed left-1/2 top-1/2 z-50 w-[min(72rem,calc(100vw-3rem))] -translate-x-1/2 -translate-y-1/2 transition-all duration-200"
-  }
-  if (!visible) {
-    containerClass += " invisible pointer-events-none opacity-0"
-  }
-  let sizeLabel = "放大视频"
-  let SizeIcon = Maximize2Icon
-  if (expanded) {
-    sizeLabel = "缩小视频"
-    SizeIcon = Minimize2Icon
-  }
-  return (
-    <>
-      {visible && expanded ? <button type="button" aria-label="缩小视频遮罩" className="fixed inset-0 z-40 bg-black/55 backdrop-blur-xs" onClick={onToggleSize} /> : null}
-      <aside className={containerClass} aria-label="视频浮窗">
-        <Card className="gap-0 overflow-hidden py-0 shadow-2xl ring-foreground/20">
-          <div className="relative bg-black">
-            <video
-              ref={videoRef}
-              tabIndex={0}
-              controls
-              preload="metadata"
-              src={mediaHref(taskId, result.video)}
-              className="aspect-video max-h-[calc(100vh-10rem)] w-full bg-black object-contain"
-            />
-            <div className="absolute right-2 top-2 flex gap-1">
-              <Button type="button" variant="secondary" size="icon" aria-label={sizeLabel} onClick={onToggleSize}>
-                <SizeIcon />
-              </Button>
-              <Button type="button" variant="secondary" size="icon" aria-label="隐藏视频" onClick={onHide}>
-                <XIcon />
-              </Button>
-            </div>
-          </div>
-          <CardHeader className="gap-1 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><VideoIcon className="size-3.5" />视频浮窗</div>
-              <div className="flex items-center gap-1"><ShortcutKey>K</ShortcutKey><span className="text-[10px] text-muted-foreground">播放</span><ShortcutKey>V</ShortcutKey><span className="text-[10px] text-muted-foreground">缩放</span></div>
-            </div>
-            <CardTitle className="truncate text-sm leading-5">{currentSection?.title || "等待播放"}</CardTitle>
-          </CardHeader>
-        </Card>
-      </aside>
-    </>
-  )
-}
-
 function MobileVideoAssistant({ taskId, result, currentSection, videoRef }: VideoAssistantProps) {
   return (
     <aside className="bg-background p-4 pt-12">
@@ -604,14 +543,21 @@ function MobileVideoAssistant({ taskId, result, currentSection, videoRef }: Vide
   )
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
+function isTextEditingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false
   }
-  if (target.isContentEditable) {
+  return target.isContentEditable || target.closest("input, textarea, select") !== null
+}
+
+function isSpaceShortcutBlockedTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+  if (isTextEditingTarget(target)) {
     return true
   }
-  return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+  return target.closest("button, a[href], video, [role='button'], [role='link']") !== null
 }
 
 function findCurrentSection(sections: OutlineSection[], currentTime: number): OutlineSection | null {

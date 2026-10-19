@@ -98,11 +98,15 @@ describe("VideoDoc app", () => {
 
     const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined)
     const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined)
-    fireEvent.keyDown(window, { code: "KeyK", key: "k" })
+    const playEvent = new KeyboardEvent("keydown", { code: "Space", key: " ", cancelable: true })
+    window.dispatchEvent(playEvent)
+    expect(playEvent.defaultPrevented).toBe(true)
     expect(play).toHaveBeenCalled()
 
     Object.defineProperty(video, "paused", { configurable: true, value: false })
-    fireEvent.keyDown(window, { code: "KeyK", key: "k" })
+    const pauseEvent = new KeyboardEvent("keydown", { code: "Space", key: " ", cancelable: true })
+    window.dispatchEvent(pauseEvent)
+    expect(pauseEvent.defaultPrevented).toBe(true)
     expect(pause).toHaveBeenCalled()
 
     const input = document.createElement("input")
@@ -110,15 +114,25 @@ describe("VideoDoc app", () => {
     input.focus()
     play.mockClear()
     pause.mockClear()
-    fireEvent.keyDown(input, { code: "KeyK", key: "k" })
+    fireEvent.keyDown(input, { code: "Space", key: " " })
     expect(play).not.toHaveBeenCalled()
     expect(pause).not.toHaveBeenCalled()
     input.remove()
 
+    const processButton = screen.getByRole("button", { name: /处理流程/ })
+    fireEvent.keyDown(processButton, { code: "Space", key: " " })
+    expect(play).not.toHaveBeenCalled()
+    expect(pause).not.toHaveBeenCalled()
+
     fireEvent.keyDown(window, { code: "KeyV", key: "v" })
     expect(screen.getByRole("button", { name: "缩小视频" })).toBeInTheDocument()
     await waitFor(() => expect(document.activeElement).toBe(video))
-    fireEvent.keyDown(window, { code: "Escape", key: "Escape" })
+    fireEvent.keyDown(video as HTMLVideoElement, { code: "KeyV", key: "v" })
+    expect(screen.getByRole("button", { name: "放大视频" })).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { code: "KeyV", key: "v" })
+    await waitFor(() => expect(document.activeElement).toBe(video))
+    fireEvent.keyDown(video as HTMLVideoElement, { code: "Escape", key: "Escape" })
     expect(screen.getByRole("button", { name: "放大视频" })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "隐藏视频" }))
