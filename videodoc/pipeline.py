@@ -26,6 +26,7 @@ import markdown
 
 from . import capabilities as capability_registry
 from . import settings as settings_module
+from .capabilities import text_model as text_model_module
 from .cancellation import TaskCancellation, TaskCancelled, run_interruptible
 from .integrations.frames import FramesError, extract_frames
 from .integrations.transcribe import TranscribeError, transcribe
@@ -44,13 +45,8 @@ class PipelineError(RuntimeError):
     """包含适合任务页面展示的流水线错误。"""
 
 
-DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
-DEFAULT_LLM_MODEL = "deepseek-v4-flash"
-
-
-def llm_api_key() -> str | None:
-    """返回 LLM API Key；兼容旧的 OPENCODE_GO_API_KEY 变量名。"""
-    return os.environ.get("VIDEODOC_LLM_API_KEY") or os.environ.get("OPENCODE_GO_API_KEY")
+DEFAULT_LLM_BASE_URL = text_model_module.DEFAULT_BASE_URL
+DEFAULT_LLM_MODEL = text_model_module.DEFAULT_MODEL
 
 
 @dataclass(frozen=True)
@@ -61,9 +57,6 @@ class PipelineConfig:
     max_frames: int = 120
     frame_width: int = 960
     max_ocr_frames: int = 24
-    llm_base_url: str = DEFAULT_LLM_BASE_URL
-    llm_model: str = DEFAULT_LLM_MODEL
-    llm_timeout_seconds: int = 600
     yt_dlp_python_module: Path | None = None
 
     @classmethod
@@ -76,9 +69,6 @@ class PipelineConfig:
             max_frames=int(os.environ.get("VIDEODOC_MAX_FRAMES", "120")),
             frame_width=int(os.environ.get("VIDEODOC_FRAME_WIDTH", "960")),
             max_ocr_frames=int(os.environ.get("VIDEODOC_OCR_MAX_FRAMES", "24")),
-            llm_base_url=os.environ.get("VIDEODOC_LLM_BASE_URL", DEFAULT_LLM_BASE_URL),
-            llm_model=os.environ.get("VIDEODOC_LLM_MODEL", DEFAULT_LLM_MODEL),
-            llm_timeout_seconds=int(os.environ.get("VIDEODOC_LLM_TIMEOUT", "600")),
             yt_dlp_python_module=(
                 Path(yt_dlp_python).expanduser() if yt_dlp_python else None
             ),
@@ -381,8 +371,24 @@ class VideoArticlePipeline:
         self.task_dir = store.task_dir(task_id)
         self.task = store.get(task_id)
         self._active_attempts: dict[str, int] = {}
+        self._text_model: text_model_module.TextModelConfig | None = None
         self._yt_dlp_command_cache: list[str] | None = None
         self._yt_dlp_version_cache: str | None = None
+
+    @property
+    def text_model(self) -> text_model_module.TextModelConfig:
+        """本次任务生效的文本模型接入点（大纲 / 正文都走它）。
+
+        每个任务开始时读一次页面设置，改完即时生效、无需重启服务；「页面 > 环境变量
+        > 内置默认」的合并已经在 settings 层做完，这里不再看环境变量。
+        """
+        if self._text_model is None:
+            section = settings_module.capability_settings(
+                settings_module.effective_settings(self._settings_path()),
+                text_model_module.SECTION_KEY,
+            )
+            self._text_model = text_model_module.config_from(section)
+        return self._text_model
 
     # ---- yt-dlp 解析：优先用本服务 venv 里的 yt-dlp，避免依赖系统 PATH ----
 
@@ -1209,10 +1215,7 @@ class VideoArticlePipeline:
         self.store.record_derived(self.task_id, "transcribe", **derived)
 
     def _llm_endpoint(self) -> str:
-        base = self.config.llm_base_url.rstrip("/")
-        if base.endswith("/chat/completions"):
-            return base
-        return f"{base}/chat/completions"
+        return self.text_model.endpoint()
 
     def _record_llm_metric(
         self,
@@ -1253,7 +1256,7 @@ class VideoArticlePipeline:
                 "kind": "llm",
                 "label": label,
                 "response": response_name,
-                "model": self.config.llm_model,
+                "model": self.text_model.model,
                 "duration_ms": duration_ms,
                 "call_ms": call_ms,
                 "backoff_ms": backoff_ms,
@@ -1277,28 +1280,22 @@ class VideoArticlePipeline:
     ) -> dict[str, Any]:
         if os.environ.get("VIDEODOC_FAKE_LLM") == "1":
             raise PipelineError("测试 LLM 只能通过专用生成函数调用。")
-        api_key = llm_api_key()
+        api_key = self.text_model.resolved_api_key()
         if not api_key:
             raise PipelineError(
-                "缺少 LLM API Key，请设置环境变量 VIDEODOC_LLM_API_KEY。"
+                "缺少 LLM API Key：请在设置页「文本模型」里填写，"
+                "或设置环境变量 VIDEODOC_LLM_API_KEY。"
             )
         payload = {
-            "model": self.config.llm_model,
+            "model": self.text_model.model,
             "messages": messages,
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
         }
         request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.store.update_step(
-            self.task_id,
-            step,
-            command=f"POST {self._llm_endpoint()} model={self.config.llm_model}",
-        )
-        self.store.append_log(
-            self.task_id,
-            step,
-            f"POST {self._llm_endpoint()} model={self.config.llm_model}",
-        )
+        command = self.text_model.describe()
+        self.store.update_step(self.task_id, step, command=command)
+        self.store.append_log(self.task_id, step, command)
         request = urllib.request.Request(
             self._llm_endpoint(),
             data=request_body,
@@ -1306,14 +1303,15 @@ class VideoArticlePipeline:
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
                 "User-Agent": "videodoc/0.1",
+                # 会话亲和头：opencode zen 与接入它的网关靠它维持长对话的 prompt cache
+                # 复用；不认这个头的 OpenAI 兼容端点会直接忽略它，所以一直带着。
                 "x-opencode-session": self.task_id,
             },
             method="POST",
         )
-        # 默认 3 次重试：本机到 LLM 端点经 Clash 代理，实测 TLS 偶发断连率约
-        # 20-40%。article 步骤有 10 次调用，重试 1 次时全任务成功率仅约 12%，
-        # 3 次可到约 73%。用 VIDEODOC_LLM_RETRIES 覆盖，0 表示不重试。
-        max_retries = int(os.environ.get("VIDEODOC_LLM_RETRIES", "3"))
+        # 网络抖动的自动重试次数由设置页「文本模型」控制（环境变量
+        # VIDEODOC_LLM_RETRIES 作默认值）；0 表示不重试。
+        max_retries = max(int(self.text_model.retries), 0)
         started = time.monotonic()
         attempts: list[dict[str, Any]] = []
         backoff_ms = 0
@@ -1326,7 +1324,7 @@ class VideoArticlePipeline:
                 def call() -> str:
                     with urllib.request.urlopen(
                         request,
-                        timeout=self.config.llm_timeout_seconds,
+                        timeout=self.text_model.timeout_seconds,
                     ) as response:
                         return response.read().decode("utf-8")
 
@@ -1360,7 +1358,7 @@ class VideoArticlePipeline:
                     label=label,
                     error=f"HTTP {error.code}",
                 )
-                raise PipelineError(f"DeepSeek API HTTP {error.code}: {detail}") from error
+                raise PipelineError(f"LLM API HTTP {error.code}: {detail}") from error
             except (
                 urllib.error.URLError,
                 http.client.RemoteDisconnected,
@@ -1374,7 +1372,7 @@ class VideoArticlePipeline:
                         "error": str(error),
                     }
                 )
-                last_error = PipelineError(f"DeepSeek API 请求失败: {error}")
+                last_error = PipelineError(f"LLM API 请求失败: {error}")
                 if attempt < max_retries:
                     delay = 3 * (attempt + 1)
                     backoff_ms += delay * 1000
@@ -1419,7 +1417,7 @@ class VideoArticlePipeline:
             response_json = json.loads(response_body)
             content = response_json["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError) as error:
-            raise PipelineError("DeepSeek API 返回结构不符合预期。") from error
+            raise PipelineError("LLM API 返回结构不符合预期。") from error
         usage = response_json.get("usage")
         if usage:
             self.store.append_log(self.task_id, step, f"usage={json.dumps(usage, ensure_ascii=False)}")

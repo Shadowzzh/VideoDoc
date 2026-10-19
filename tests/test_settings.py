@@ -18,12 +18,36 @@ def _section(settings):
 def test_default_settings_are_grouped_by_capability():
     defaults = st.default_settings()
 
-    assert list(defaults["capabilities"]) == [CAPABILITY]
+    assert list(defaults["capabilities"]) == [CAPABILITY, "text_model"]
     vision = defaults["capabilities"][CAPABILITY]
     assert vision["engine"] == "auto"
     assert vision["local"]["enabled"] is True
     assert vision["external"]["protocol"] == "openai-chat"
     assert vision["external"]["prompt"]
+
+
+def test_text_model_defaults_point_at_deepseek_official(monkeypatch):
+    section = st.default_settings()["capabilities"]["text_model"]
+
+    assert section["base_url"] == "https://api.deepseek.com"
+    assert section["model"] == "deepseek-v4-flash"
+    assert section["api_key"] == ""
+    assert section["retries"] == 3
+
+
+def test_text_model_defaults_read_environment(monkeypatch):
+    monkeypatch.setenv("VIDEODOC_LLM_BASE_URL", "http://192.168.8.211:3006/v1")
+    monkeypatch.setenv("VIDEODOC_LLM_MODEL", "deepseek-v4.1-flash")
+    monkeypatch.setenv("VIDEODOC_LLM_API_KEY", "sk-env")
+    monkeypatch.setenv("VIDEODOC_LLM_RETRIES", "1")
+
+    section = st.default_settings()["capabilities"]["text_model"]
+
+    assert section["base_url"] == "http://192.168.8.211:3006/v1"
+    assert section["model"] == "deepseek-v4.1-flash"
+    assert section["retries"] == 1
+    # Key 故意不进默认值：否则会盖过页面里配的 api_key_file。
+    assert section["api_key"] == ""
 
 
 def test_defaults_read_environment(monkeypatch):
@@ -271,8 +295,9 @@ def test_redact_settings_exposes_schema_for_settings_page(tmp_path):
     view = st.redact_settings(st.effective_settings(tmp_path / "missing.json"))
 
     categories = view["categories"]
-    assert [category["key"] for category in categories] == [CAPABILITY]
+    assert [category["key"] for category in categories] == [CAPABILITY, "text_model"]
     assert categories[0]["label"] == "图像识别"
+    assert categories[1]["label"] == "文本模型"
     assert [group["title"] for group in categories[0]["groups"]] == [
         "识别通道",
         "本地（macOS Vision）",

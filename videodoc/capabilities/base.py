@@ -77,18 +77,35 @@ class Availability:
     reason: str = ""
 
 
-class Capability(Protocol):
-    """能力协议。实现只要满足这些属性/方法即可被注册表与页面使用。"""
+class Section(Protocol):
+    """设置页里的一个分类：只声明默认值与字段，不占流水线步骤位。
+
+    文本模型（``text_model``）就是这一类：它影响核心步骤（大纲 / 正文）怎么发请求，
+    但自己不是一步，所以只需要「声明设置 + 探测连通性」这套契约。
+    """
 
     key: str
     label: str
     description: str
 
     def defaults(self) -> dict[str, Any]:
-        """该能力的默认设置（会被环境变量/设置文件覆盖）。"""
+        """该分类的默认设置（会被环境变量/设置文件覆盖）。"""
 
     def groups(self) -> tuple[FieldGroup, ...]:
         """设置页右侧的字段分组声明。"""
+
+    def availability(self, settings: dict[str, Any]) -> Availability:
+        """在给定设置下是否可用。"""
+
+    def describe(self, settings: dict[str, Any]) -> str:
+        """设置页 / 任务日志里显示的「命令/端点」摘要。"""
+
+    def probe(self, settings: dict[str, Any]) -> dict[str, Any]:
+        """连通性探测：不允许消耗业务额度。"""
+
+
+class Capability(Section, Protocol):
+    """占流水线步骤位的能力：在 Section 之上再加执行契约。"""
 
     def step(self) -> StepSpec:
         """占用的流水线步骤位。"""
@@ -96,14 +113,6 @@ class Capability(Protocol):
     def artifact(self) -> tuple[str, str]:
         """产物登记名：(artifact_key, 文件名)。"""
 
-    def availability(self, settings: dict[str, Any]) -> Availability:
-        """在给定设置下是否可用。"""
-
-    def describe(self, settings: dict[str, Any]) -> str:
-        """步骤卡片上显示的「命令/端点」摘要。"""
-
-    def probe(self, settings: dict[str, Any]) -> dict[str, Any]:
-        """连通性探测：不允许消耗业务额度。"""
 
     def run(
         self,
@@ -128,32 +137,46 @@ class Registry:
     """能力注册表：主流程、设置页、任务状态页都只通过它取能力。"""
 
     def __init__(self) -> None:
-        self._items: dict[str, Capability] = {}
+        self._sections: dict[str, Section] = {}
+        self._capabilities: dict[str, Capability] = {}
 
     def register(self, capability: Capability) -> Capability:
-        if capability.key in self._items:
-            raise ValueError(f"能力 key 重复注册: {capability.key}")
-        self._items[capability.key] = capability
+        if capability.key in self._sections:
+            raise ValueError(f"设置分类 key 重复注册: {capability.key}")
+        self._sections[capability.key] = capability
+        self._capabilities[capability.key] = capability
         return capability
 
-    def all(self) -> tuple[Capability, ...]:
-        return tuple(self._items.values())
+    def register_section(self, section: Section) -> Section:
+        """注册只提供设置、不占流水线步骤位的分类（如文本模型）。"""
+        if section.key in self._sections:
+            raise ValueError(f"设置分类 key 重复注册: {section.key}")
+        self._sections[section.key] = section
+        return section
 
-    def get(self, key: str) -> Capability | None:
-        return self._items.get(key)
+    def all(self) -> tuple[Capability, ...]:
+        """已注册的能力（占流水线步骤位的那些）。"""
+        return tuple(self._capabilities.values())
+
+    def sections(self) -> tuple[Section, ...]:
+        """设置页的全部分类：能力 + 纯设置分类，按注册顺序。"""
+        return tuple(self._sections.values())
+
+    def get(self, key: str) -> Section | None:
+        return self._sections.get(key)
 
     def by_step(self, step_key: str) -> Capability | None:
-        for capability in self._items.values():
+        for capability in self._capabilities.values():
             if capability.step().key == step_key:
                 return capability
         return None
 
     def step_specs(self) -> tuple[StepSpec, ...]:
-        return tuple(capability.step() for capability in self._items.values())
+        return tuple(capability.step() for capability in self._capabilities.values())
 
     def defaults(self) -> dict[str, Any]:
-        """按能力 key 分组的默认设置（对应设置文件里的 capabilities.<key> 段）。"""
-        return {capability.key: capability.defaults() for capability in self._items.values()}
+        """按分类 key 分组的默认设置（对应设置文件里的 capabilities.<key> 段）。"""
+        return {section.key: section.defaults() for section in self._sections.values()}
 
     def schema(self, settings: dict[str, Any]) -> list[dict[str, Any]]:
         """设置页左侧分类列表 + 右侧字段声明（不含密钥值）。
@@ -162,7 +185,7 @@ class Registry:
         """
         sections = settings.get("capabilities") or {}
         categories: list[dict[str, Any]] = []
-        for capability in self._items.values():
+        for capability in self._sections.values():
             section = sections.get(capability.key) or {}
             availability = capability.availability(section)
             categories.append(

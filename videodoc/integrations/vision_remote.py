@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from ..cancellation import TaskCancellation, run_interruptible
+from .api_key import resolve_api_key
 
 PROTOCOLS: tuple[str, ...] = (
     "openai-chat",
@@ -91,20 +92,7 @@ class RemoteVisionConfig:
 
     def resolved_api_key(self) -> str:
         """优先用页面里填的明文 Key；没有再读 Key 文件。"""
-        if self.api_key.strip():
-            return self.api_key.strip()
-        if self.api_key_file is not None:
-            path = Path(self.api_key_file).expanduser()
-            if path.is_file():
-                try:
-                    text = path.read_text(encoding="utf-8").strip()
-                except OSError:
-                    return ""
-                # 密钥文件可能写成 KEY=VALUE 或纯值，两种都认。
-                if "=" in text and not text.startswith("sk-"):
-                    return text.partition("=")[2].strip().strip("'\"")
-                return text
-        return ""
+        return resolve_api_key(self.api_key, self.api_key_file)
 
     def endpoint(self, *, probe: bool = False) -> str:
         table = DEFAULT_PROBE_PATHS if probe else DEFAULT_PATHS

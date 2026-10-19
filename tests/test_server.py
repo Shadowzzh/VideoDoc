@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from videodoc.capabilities import text_model
 from videodoc.integrations import vision_local, vision_remote
 from videodoc.server import create_app
 
@@ -333,6 +334,75 @@ def test_settings_test_endpoint_reports_missing_channel(app, client, tmp_path, m
 
     assert response.status_code == 400
     assert response.get_json()["ok"] is False
+
+
+def test_settings_api_exposes_text_model_without_leaking_key(app, client, tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("VIDEODOC_LLM_BASE_URL", "http://192.168.8.211:3006/v1")
+    monkeypatch.setenv("VIDEODOC_LLM_MODEL", "deepseek-v4.1-flash")
+    monkeypatch.setenv("VIDEODOC_LLM_API_KEY", "sk-env-abcd")
+
+    response = client.get("/api/settings")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert [item["key"] for item in payload["categories"]] == ["image_vision", "text_model"]
+    section = payload["capabilities"]["text_model"]
+    assert section["base_url"] == "http://192.168.8.211:3006/v1"
+    assert section["model"] == "deepseek-v4.1-flash"
+    # 环境变量里的 Key 不冒充「页面已配置的明文 Key」，但探测/调用仍能用它。
+    assert section["api_key_configured"] is False
+    assert "sk-env-abcd" not in json.dumps(payload)
+
+
+def test_settings_api_saves_text_model_from_page(app, client, tmp_path, monkeypatch):
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(settings_file))
+
+    response = client.put(
+        "/api/settings",
+        json={
+            "capabilities": {
+                "text_model": {
+                    "base_url": "http://192.168.8.211:3006/v1",
+                    "model": "deepseek-v4.1-flash",
+                    "api_key": "sk-page-abcd",
+                }
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    saved = json.loads(settings_file.read_text(encoding="utf-8"))["capabilities"]["text_model"]
+    assert saved["base_url"] == "http://192.168.8.211:3006/v1"
+    assert saved["model"] == "deepseek-v4.1-flash"
+    assert response.get_json()["capabilities"]["text_model"]["api_key_hint"] == "****abcd"
+
+
+def test_settings_test_ignores_unconfigured_sections(app, client, tmp_path, monkeypatch):
+    """只配了文本模型时，「测试连接」不该因为图像识别没配而整体失败。"""
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("VIDEODOC_LLM_BASE_URL", "http://127.0.0.1:3006/v1")
+    monkeypatch.setenv("VIDEODOC_LLM_MODEL", "deepseek-v4.1-flash")
+    monkeypatch.setenv("VIDEODOC_LLM_API_KEY", "sk-abcd")
+    monkeypatch.setattr(vision_local.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        text_model,
+        "probe",
+        lambda settings: {
+            "ok": True,
+            "endpoint": "http://127.0.0.1:3006/v1/models",
+            "detail": "可用",
+        },
+    )
+
+    response = client.post("/api/settings/test", json={})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["capabilities"]["text_model"]["ok"] is True
+    assert payload["capabilities"]["image_vision"]["available"] is False
 
 
 def test_cancel_rejects_unknown_task(client):

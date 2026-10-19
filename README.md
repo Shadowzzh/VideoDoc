@@ -82,12 +82,22 @@ pnpm --dir frontend install && pnpm --dir frontend build
 
 ## 配置
 
-全部通过环境变量或 `.env`（真实环境变量优先，`.env` 只补空缺）。
-完整清单见 [`.env.example`](.env.example)，常用的几项：
+两个入口，**网页设置优先于环境变量**：
+
+* **网页设置**（`/app/settings`）：改完对**新任务**立即生效，不用重启服务；
+  落在 `~/.config/videodoc/settings.json`（权限 600，可用 `VIDEODOC_SETTINGS_FILE` 改路径）。
+* **环境变量 / `.env`**：提供默认值，也适合无头部署。
+
+| 设置分类 | 能配什么 |
+|---|---|
+| **文本模型** | 大纲和正文的 BaseURL、模型、Key（明文或密钥文件）、超时与重试 |
+| **图像识别** | 本地 macOS Vision OCR 与云端视觉模型的通道、端点、预算 |
+
+环境变量完整清单见 [`.env.example`](.env.example)，常用的几项：
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `VIDEODOC_LLM_API_KEY` | — | **必填** |
+| `VIDEODOC_LLM_API_KEY` | — | **必填**（也可以只在网页设置里填） |
 | `VIDEODOC_LLM_BASE_URL` | `https://api.deepseek.com` | 任意 OpenAI 兼容端点 |
 | `VIDEODOC_LLM_MODEL` | `deepseek-v4-flash` | 模型名 |
 | `VIDEODOC_WHISPER_MODEL` | `large-v3-turbo` | 模型名或本地 `.bin` 路径 |

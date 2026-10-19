@@ -548,7 +548,7 @@ def test_call_llm_gives_up_after_retries(tmp_path, monkeypatch):
     with pytest.raises(PipelineError) as error:
         pipeline._call_llm("outline", [{"role": "user", "content": "hi"}])
 
-    assert "DeepSeek API 请求失败" in str(error.value)
+    assert "LLM API 请求失败" in str(error.value)
     assert "boom" in str(error.value)
 
 

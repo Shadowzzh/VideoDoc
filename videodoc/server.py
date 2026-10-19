@@ -227,10 +227,10 @@ def create_app(config: dict | None = None) -> Flask:
 
     @app.post("/api/settings/test")
     def test_settings_api():
-        """探测所有已注册能力。
+        """探测所有已注册的设置分类。
 
         允许带草稿 payload（页面没保存也能先测），草稿先合并到生效设置上；云端只打
-        各协议的 ``/models``，不消耗业务额度。
+        各协议的 ``/models``，不消耗业务额度。未配置（不可用）的分类不算失败。
         """
         payload = request.get_json(silent=True) or {}
         try:
@@ -244,13 +244,13 @@ def create_app(config: dict | None = None) -> Flask:
             return jsonify({"error": str(error)}), 400
 
         results: dict[str, Any] = {}
-        for capability in capability_registry.registry.all():
-            section = settings_module.capability_settings(probe_settings, capability.key)
-            availability = capability.availability(section)
-            results[capability.key] = {
-                "label": capability.label,
-                "available": availability.available,
-                **capability.probe(section),
+        for section_provider in capability_registry.registry.sections():
+            section = settings_module.capability_settings(probe_settings, section_provider.key)
+            state = section_provider.availability(section)
+            results[section_provider.key] = {
+                "label": section_provider.label,
+                "available": state.available,
+                **section_provider.probe(section),
             }
         if not any(item.get("available") for item in results.values()):
             return jsonify(
@@ -260,8 +260,10 @@ def create_app(config: dict | None = None) -> Flask:
                     "detail": "没有任何可用能力：本地需 swift，云端需 BaseURL + 模型 + Key。",
                 }
             ), 400
-        ok = all(item.get("ok", item.get("available", False)) for item in results.values())
-        primary = results.get("image_vision", {})
+        # 没配的分类（available=False）不参与判定：用户可能只想用其中一条链路。
+        ok = all(item.get("ok", True) for item in results.values() if item.get("available"))
+        # ``primary`` 保留历史形态：旧前端读顶层 engine/local/external 字段。
+        primary = results.get("image_vision") or next(iter(results.values()), {})
         return jsonify({**primary, "ok": ok, "capabilities": results}), (200 if ok else 502)
 
     @app.get("/tasks/<task_id>")

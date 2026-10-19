@@ -226,7 +226,7 @@ export interface SettingsGroup {
   fields: SettingsField[]
 }
 
-/** 左侧分类：对应一个可插拔能力（当前只有「图像识别」）。 */
+/** 左侧分类：对应一个设置分类（图像识别 / 文本模型）。 */
 export interface SettingsCategory {
   key: string
   label: string
@@ -261,6 +261,8 @@ export interface SettingsCapabilityResult {
   ok?: boolean
   engine?: string
   detail?: string
+  endpoint?: string
+  install_hint?: string
   local?: SettingsChannelResult
   external?: SettingsChannelResult
 }

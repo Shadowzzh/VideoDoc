@@ -155,6 +155,53 @@ function ChannelLine({ name, result }: { name: string; result: SettingsCapabilit
   )
 }
 
+/** 测试结果：先展示当前分类自己的探测，再列其他分类的概览。 */
+function TestResultCard({
+  result,
+  categoryKey,
+}: {
+  result: SettingsTestResult
+  categoryKey: string
+}) {
+  const own: SettingsCapabilityResult = result.capabilities?.[categoryKey] ?? result
+  const others = Object.entries(result.capabilities ?? {}).filter(([key]) => key !== categoryKey)
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          测试结果
+          <Badge variant={result.ok ? "secondary" : "destructive"}>
+            {result.ok ? "可用" : "不可用"}
+          </Badge>
+        </CardTitle>
+        {own.engine ? <CardDescription>生效通道：{own.engine}</CardDescription> : null}
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <ChannelLine name="本地" result={own.local} />
+        <ChannelLine name="云端" result={own.external} />
+        {own.available === false ? (
+          <div className="text-amber-600 dark:text-amber-500">未配置：{own.detail || "补齐上面的字段后再测。"}</div>
+        ) : own.detail ? (
+          <div className={own.ok === false ? "text-destructive" : "text-muted-foreground"}>{own.detail}</div>
+        ) : null}
+        {own.endpoint && !own.external ? (
+          <div className="font-mono text-xs text-muted-foreground">{own.endpoint}</div>
+        ) : null}
+        {others.length > 0 ? (
+          <div className="space-y-0.5 pt-1 text-xs text-muted-foreground">
+            {others.map(([key, item]) => (
+              <div key={key}>
+                {item.label ?? key}：
+                {item.available === false ? "未配置" : item.ok === false ? `❌ ${item.detail ?? ""}` : "✅"}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
 /** 设置页的左侧导航（占用 Shell 的 sidebar 槽位）：这里展示「设置分类」，不再是任务列表。 */
 function SettingsNav({
   categories,
@@ -388,26 +435,7 @@ export function SettingsPage() {
               </span>
             </div>
 
-            {testResult ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    测试结果
-                    <Badge variant={testResult.ok ? "secondary" : "destructive"}>
-                      {testResult.ok ? "可用" : "不可用"}
-                    </Badge>
-                  </CardTitle>
-                  {testResult.engine ? <CardDescription>生效通道：{testResult.engine}</CardDescription> : null}
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <ChannelLine name="本地" result={testResult.local} />
-                  <ChannelLine name="云端" result={testResult.external} />
-                  {testResult.detail ? (
-                    <div className="text-muted-foreground">{testResult.detail}</div>
-                  ) : null}
-                </CardContent>
-              </Card>
-            ) : null}
+            {testResult ? <TestResultCard result={testResult} categoryKey={selected} /> : null}
 
             <p className="pb-8 text-xs text-muted-foreground">
               设置文件：<span className="font-mono">{settings.settings_path}</span>　·　环境变量提供默认值，
