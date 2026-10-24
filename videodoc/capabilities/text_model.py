@@ -26,6 +26,11 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_RETRIES = 3
+# 显式发送的 max_tokens。思考型模型会把推理也算进这个预算：不传时服务端可能按
+# 很小的默认值截断（实测 4096 全被 reasoning 吃掉，正文 JSON 直接断在半句）。
+# 32768 对「大纲 + 单章正文」都留了余量，具体模型上限仍以服务商为准。
+DEFAULT_MAX_TOKENS = 32768
+MAX_MAX_TOKENS = 262144
 USER_AGENT = "videodoc/0.1"
 
 
@@ -41,6 +46,12 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    """正整数环境变量；0/负数视为写错，回落到默认值而不是让请求必然失败。"""
+    value = _env_int(name, default)
+    return value if value > 0 else default
 
 
 def llm_api_key() -> str | None:
@@ -121,6 +132,18 @@ def _groups() -> tuple[FieldGroup, ...]:
                     maximum=10,
                     help="只对网络类错误重试；HTTP 4xx 直接失败。",
                 ),
+                Field(
+                    key="max_tokens",
+                    label="输出 token 上限",
+                    type="number",
+                    default=DEFAULT_MAX_TOKENS,
+                    minimum=256,
+                    maximum=MAX_MAX_TOKENS,
+                    help=(
+                        "每次大纲/正文请求显式发送的 max_tokens。思考型模型的推理也计入"
+                        "这个预算；设置过小会导致 finish_reason=length、正文 JSON 被截断。"
+                    ),
+                ),
             ),
         ),
     )
@@ -140,6 +163,7 @@ def defaults() -> dict[str, Any]:
         "api_key_file": _env_text("VIDEODOC_LLM_API_KEY_FILE"),
         "timeout_seconds": _env_int("VIDEODOC_LLM_TIMEOUT", DEFAULT_TIMEOUT_SECONDS),
         "retries": _env_int("VIDEODOC_LLM_RETRIES", DEFAULT_RETRIES),
+        "max_tokens": _env_positive_int("VIDEODOC_LLM_MAX_TOKENS", DEFAULT_MAX_TOKENS),
     }
 
 
@@ -153,6 +177,11 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+def _as_positive_int(value: Any, default: int) -> int:
+    number = _as_int(value, default)
+    return number if number > 0 else default
+
+
 @dataclass(frozen=True)
 class TextModelConfig:
     base_url: str
@@ -161,6 +190,7 @@ class TextModelConfig:
     api_key_file: Path | None = None
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     retries: int = DEFAULT_RETRIES
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
     def resolved_api_key(self) -> str:
         """页面里填的（明文 > Key 文件）优先，都没有才回落到环境变量。"""
@@ -195,6 +225,7 @@ def config_from(settings: dict[str, Any]) -> TextModelConfig:
         api_key_file=Path(key_file).expanduser() if key_file else None,
         timeout_seconds=_as_int(settings.get("timeout_seconds"), DEFAULT_TIMEOUT_SECONDS),
         retries=_as_int(settings.get("retries"), DEFAULT_RETRIES),
+        max_tokens=_as_positive_int(settings.get("max_tokens"), DEFAULT_MAX_TOKENS),
     )
 
 

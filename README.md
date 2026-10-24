@@ -90,7 +90,7 @@ pnpm --dir frontend install && pnpm --dir frontend build
 
 | 设置分类 | 能配什么 |
 |---|---|
-| **文本模型** | 大纲和正文的 BaseURL、模型、Key（明文或密钥文件）、超时与重试 |
+| **文本模型** | 大纲和正文的 BaseURL、模型、Key（明文或密钥文件）、超时、重试与输出 token 上限 |
 | **图像识别** | 本地 macOS Vision OCR 与云端视觉模型的通道、端点、预算 |
 
 环境变量完整清单见 [`.env.example`](.env.example)，常用的几项：

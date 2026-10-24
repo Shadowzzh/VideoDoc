@@ -1228,6 +1228,7 @@ class VideoArticlePipeline:
         label: str | None = None,
         usage: dict[str, Any] | None = None,
         error: str | None = None,
+        finish_reason: str | None = None,
     ) -> None:
         """记录一次 LLM 调用（含重试与退避）。
 
@@ -1257,6 +1258,8 @@ class VideoArticlePipeline:
                 "label": label,
                 "response": response_name,
                 "model": self.text_model.model,
+                "max_tokens": self.text_model.max_tokens,
+                "finish_reason": finish_reason,
                 "duration_ms": duration_ms,
                 "call_ms": call_ms,
                 "backoff_ms": backoff_ms,
@@ -1291,6 +1294,9 @@ class VideoArticlePipeline:
             "messages": messages,
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
+            # 显式传，不依赖服务端默认值：思考型模型的推理也吃这份预算，
+            # 默认上限偏小时正文 JSON 会被截断（finish_reason=length）。
+            "max_tokens": self.text_model.max_tokens,
         }
         request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         command = self.text_model.describe()
@@ -1415,12 +1421,41 @@ class VideoArticlePipeline:
         write_text_atomic(private_dir / f"{safe_filename}.json", response_body)
         try:
             response_json = json.loads(response_body)
-            content = response_json["choices"][0]["message"]["content"]
+            choice = response_json["choices"][0]
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise PipelineError("LLM API 返回结构不符合预期。") from error
         usage = response_json.get("usage")
+        usage_dict = usage if isinstance(usage, dict) else None
         if usage:
             self.store.append_log(self.task_id, step, f"usage={json.dumps(usage, ensure_ascii=False)}")
+        finish_reason = ""
+        if isinstance(choice, dict):
+            finish_reason = str(choice.get("finish_reason") or "").strip().lower()
+        if finish_reason == "length":
+            # 响应已落盘：先判断截断，再解析正文。否则被截断的 JSON 会先撞上
+            # 「返回结构不符合预期」，把真正的原因（预算不够）藏起来。
+            self._record_llm_metric(
+                step,
+                started,
+                attempts,
+                backoff_ms,
+                response_name,
+                label=label,
+                usage=usage_dict,
+                error="finish_reason=length",
+                finish_reason=finish_reason,
+            )
+            raise PipelineError(
+                "模型输出达到 token 上限，内容被截断"
+                f"（finish_reason=length，max_tokens={self.text_model.max_tokens}，"
+                f"completion_tokens={(usage_dict or {}).get('completion_tokens')}）。"
+                f"原始响应已保存到 private/{safe_filename}.json，"
+                "可在设置页「文本模型 → 输出 token 上限」调大后重试。"
+            )
+        try:
+            content = choice["message"]["content"]
+        except (KeyError, TypeError) as error:
+            raise PipelineError("LLM API 返回结构不符合预期。") from error
         self._record_llm_metric(
             step,
             started,
@@ -1428,7 +1463,8 @@ class VideoArticlePipeline:
             backoff_ms,
             response_name,
             label=label,
-            usage=usage if isinstance(usage, dict) else None,
+            usage=usage_dict,
+            finish_reason=finish_reason or None,
         )
         return extract_json_object(str(content))
 

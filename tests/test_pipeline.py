@@ -576,6 +576,162 @@ def test_call_llm_does_not_retry_http_4xx(tmp_path, monkeypatch):
     assert calls["n"] == 1  # 4xx 不重试
 
 
+def test_call_llm_sends_default_max_tokens(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIDEODOC_FAKE_LLM", raising=False)
+    monkeypatch.delenv("VIDEODOC_LLM_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-key")
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    instance = VideoArticlePipeline(store, task["id"], PipelineConfig())
+
+    bodies = []
+
+    def fake_urlopen(request, timeout=None):
+        bodies.append(json.loads(request.data.decode("utf-8")))
+        body = json.dumps(
+            {
+                "choices": [
+                    {"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            }
+        ).encode("utf-8")
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return body
+
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert instance._call_llm("outline", [{"role": "user", "content": "hi"}]) == {"ok": True}
+
+    assert bodies[0]["max_tokens"] == 32768
+    metrics = [item for item in store.read_metrics(task["id"]) if item["kind"] == "llm"]
+    assert metrics[-1]["max_tokens"] == 32768
+    assert metrics[-1]["finish_reason"] == "stop"
+
+
+def test_call_llm_sends_configured_max_tokens(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIDEODOC_FAKE_LLM", raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "capabilities": {
+                    "text_model": {
+                        "base_url": "http://127.0.0.1:3006/v1",
+                        "model": "deepseek-v4.1-flash",
+                        "api_key": "sk-page-key",
+                        "max_tokens": 16000,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VIDEODOC_SETTINGS_FILE", str(settings_path))
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    instance = VideoArticlePipeline(store, task["id"], PipelineConfig())
+
+    bodies = []
+
+    def fake_urlopen(request, timeout=None):
+        bodies.append(json.loads(request.data.decode("utf-8")))
+        body = json.dumps(
+            {"choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}]}
+        ).encode("utf-8")
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return body
+
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    instance._call_llm("outline", [{"role": "user", "content": "hi"}])
+
+    assert bodies[0]["max_tokens"] == 16000
+
+
+def test_call_llm_reports_token_limit_before_json_parse(tmp_path, monkeypatch):
+    """finish_reason=length 必须先于正文解析报错，否则会被误报成 JSON 结构错误。"""
+    monkeypatch.delenv("VIDEODOC_FAKE_LLM", raising=False)
+    monkeypatch.delenv("VIDEODOC_LLM_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-key")
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/video")
+    instance = VideoArticlePipeline(store, task["id"], PipelineConfig())
+
+    raw = json.dumps(
+        {
+            "choices": [
+                {
+                    # 截断在半句：不是完整 JSON，旧代码会先撞上「结构不符合预期」。
+                    "message": {"content": '{"title": "未完成的大纲'},
+                    "finish_reason": "length",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 20751,
+                "completion_tokens": 4096,
+                "total_tokens": 24847,
+            },
+        }
+    ).encode("utf-8")
+
+    def fake_urlopen(request, timeout=None):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return raw
+
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(PipelineError) as error:
+        instance._call_llm("outline", [{"role": "user", "content": "hi"}])
+
+    message = str(error.value)
+    assert "模型输出达到 token 上限，内容被截断" in message
+    assert "finish_reason=length" in message
+    assert "completion_tokens=4096" in message
+    assert "LLM API 返回结构不符合预期" not in message
+
+    # 原始响应保留在磁盘，用量写进日志与指标，便于复盘而不是只留一句报错。
+    saved = store.task_dir(task["id"]) / "private" / "outline-response.json"
+    assert saved.read_bytes() == raw
+    assert "completion_tokens" in (
+        store.task_dir(task["id"]) / "logs" / "outline.log"
+    ).read_text(encoding="utf-8")
+    metrics = [item for item in store.read_metrics(task["id"]) if item["kind"] == "llm"]
+    assert metrics[-1]["error"] == "finish_reason=length"
+    assert metrics[-1]["finish_reason"] == "length"
+    assert metrics[-1]["completion_tokens"] == 4096
+    assert metrics[-1]["max_tokens"] == 32768
+
+
 def test_step_waits_for_manual_retry_and_records_attempts(tmp_path):
     store = TaskStore(tmp_path / "tasks")
     task = store.create("https://example.com/video")

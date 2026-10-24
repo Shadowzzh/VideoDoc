@@ -42,6 +42,27 @@ def test_defaults_follow_deepseek_official():
     assert section["retries"] == 3
 
 
+def test_token_budget_defaults_to_32768_and_follows_environment(monkeypatch):
+    monkeypatch.delenv("VIDEODOC_LLM_MAX_TOKENS", raising=False)
+
+    assert text_model.DEFAULT_MAX_TOKENS == 32768
+    assert text_model.defaults()["max_tokens"] == 32768
+
+    # 环境变量只作默认值；写错（0 / 非数字）时回落，不让请求必然失败。
+    monkeypatch.setenv("VIDEODOC_LLM_MAX_TOKENS", "16000")
+    assert text_model.defaults()["max_tokens"] == 16000
+    monkeypatch.setenv("VIDEODOC_LLM_MAX_TOKENS", "0")
+    assert text_model.defaults()["max_tokens"] == 32768
+    monkeypatch.setenv("VIDEODOC_LLM_MAX_TOKENS", "not-a-number")
+    assert text_model.defaults()["max_tokens"] == 32768
+
+
+def test_config_carries_max_tokens_from_settings():
+    assert text_model.config_from(_section()).max_tokens == 32768
+    assert text_model.config_from(_section({"max_tokens": 16000})).max_tokens == 16000
+    assert text_model.config_from(_section({"max_tokens": 0})).max_tokens == 32768
+
+
 # ---------------------------------------------------------------- 端点拼接
 
 
@@ -334,6 +355,7 @@ def test_save_settings_accepts_text_model_section(tmp_path):
                     "base_url": "http://192.168.8.211:3006/v1",
                     "model": "deepseek-v4.1-flash",
                     "api_key": "sk-abcdefgh",
+                    "max_tokens": 65536,
                 }
             }
         },
@@ -343,6 +365,18 @@ def test_save_settings_accepts_text_model_section(tmp_path):
 
     assert saved["model"] == "deepseek-v4.1-flash"
     assert saved["api_key"] == "sk-abcdefgh"
+    assert saved["max_tokens"] == 65536
+
+
+def test_save_settings_rejects_out_of_range_token_budget(tmp_path):
+    path = tmp_path / "settings.json"
+
+    with pytest.raises(st.SettingsError):
+        st.save_settings(
+            {"capabilities": {"text_model": {"max_tokens": 16}}}, path
+        )
+
+    assert not path.exists()
 
 
 def test_save_settings_rejects_non_http_text_model_base_url(tmp_path):
