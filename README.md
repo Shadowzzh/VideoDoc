@@ -115,6 +115,14 @@ pnpm --dir frontend install && pnpm --dir frontend build
 - 本地 OCR 仅 macOS 可用
 - 删除任务走可恢复回收站（等待中也可删，仅运行中拒绝），暂无网页端恢复入口
 
+  回收站默认在 `~/.local/share/videodoc/trash/`（可用 `VIDEODOC_RUNTIME_DIR`
+  改数据根目录），任务目录名是 `<task-id>-<删除时间>`，需要恢复时移回：
+
+  ```bash
+  mv ~/.local/share/videodoc/trash/<task-id>-<YYYYMMDD-HHMMSS> \
+     ~/.local/share/videodoc/tasks/<task-id>
+  ```
+
 ## 开发
 
 ```bash
@@ -135,6 +143,17 @@ examples/                  # 示例产物（/sample 展示用）
 ```
 
 流水线：`probe → download → audio → transcribe → outline → frames → select_images → ocr → article → finalize`
+
+### 前端长文本约定
+
+任务没有文章标题时 `taskTitle` 会退回原始分享链接，抖音链接常有 300+ 字符且
+不含空格，渲染时按下面两条处理，否则会撑出容器：
+
+- 固定宽度的容器（确认框、卡片、提示块）用 `[overflow-wrap:anywhere]`；
+  `break-words`（`overflow-wrap: break-word`）不参与 min-content 计算，
+  Grid/Flex 的 `auto` 轨道仍会被长串撑开。
+- 需要硬约束的网格容器把列轨道写成 `grid-cols-[minmax(0,1fr)]`，
+  并在确认框一类弹窗里给 `max-h-[calc(100dvh-2rem)]` 兜底。
 
 ## 许可
 
