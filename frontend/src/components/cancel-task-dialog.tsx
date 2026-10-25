@@ -13,7 +13,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cancelTask } from "@/lib/api"
-import { taskTitle } from "@/lib/format"
+import { taskTitle, taskTitleShort } from "@/lib/format"
 import type { VideoTask } from "@/types"
 
 interface CancelTaskDialogProps {
@@ -58,7 +58,7 @@ export function CancelTaskDialog({ task, open, onOpenChange, onCancelled }: Canc
           </AlertDialogMedia>
           <AlertDialogTitle>终止这个任务？</AlertDialogTitle>
           <AlertDialogDescription>
-            “{taskTitle(task)}”会停止当前阶段的命令，已完成的视频、音频、转写、关键帧等产物全部保留。
+            “{taskTitleShort(task)}”会停止当前阶段的命令，已完成的视频、音频、转写、关键帧等产物全部保留。
             任务变成“已取消”，之后可以从最近的有效阶段继续，不会重新下载或重新转写。
           </AlertDialogDescription>
         </AlertDialogHeader>

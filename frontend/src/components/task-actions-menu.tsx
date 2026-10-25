@@ -21,7 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { deleteTask, getTaskDeletionPreview } from "@/lib/api"
-import { formatBytes, taskTitle } from "@/lib/format"
+import { formatBytes, taskTitle, taskTitleShort } from "@/lib/format"
 import type { TaskDeletionPreview, VideoTask } from "@/types"
 
 interface TaskActionsMenuProps {
@@ -123,7 +123,7 @@ export function TaskActionsMenu({ task, onDeleted, onChanged }: TaskActionsMenuP
             </AlertDialogMedia>
             <AlertDialogTitle>删除这个任务？</AlertDialogTitle>
             <AlertDialogDescription>
-              “{taskTitle(task)}”将从任务列表移除，其视频、音频、转写、关键帧、文章和日志会一起移入 VideoDoc 回收站。
+              “{taskTitleShort(task)}”将从任务列表移除，其视频、音频、转写、关键帧、文章和日志会一起移入 VideoDoc 回收站。
             </AlertDialogDescription>
           </AlertDialogHeader>
 

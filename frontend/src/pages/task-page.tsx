@@ -62,7 +62,7 @@ export function TaskPage({ taskId }: { taskId: string }) {
                 <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
                   <div className="min-w-0 space-y-2">
                     <div className="flex items-center gap-2"><StatusBadge status={task.status} /><span className="font-mono text-xs text-muted-foreground">{task.id}</span></div>
-                    <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">{taskTitle(task)}</h1>
+                    <h1 className="line-clamp-3 [overflow-wrap:anywhere] text-2xl font-semibold tracking-tight md:text-3xl">{taskTitle(task)}</h1>
                     <a className="inline-flex max-w-full items-center gap-1 truncate text-sm text-muted-foreground hover:text-foreground" href={task.url} target="_blank" rel="noreferrer">{task.url}<ExternalLinkIcon className="size-3.5 shrink-0" /></a>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
@@ -219,7 +219,7 @@ function StepDetails({ step, now }: { step: TaskStep; now: number }) {
                     <div className="min-w-0">
                       <p className="font-medium">第 {attempt.number} 次尝试</p>
                       <p className="mt-0.5 text-xs text-muted-foreground">{formatDate(attempt.started_at)} → {formatDate(attempt.finished_at)} · 耗时 {formatDurationMilliseconds(attemptDurationMs(attempt, now))}</p>
-                      {attempt.error ? <p className="mt-1 text-xs text-destructive">{attempt.error}</p> : null}
+                      {attempt.error ? <p className="mt-1 text-xs text-destructive [overflow-wrap:anywhere]">{attempt.error}</p> : null}
                     </div>
                     <StatusBadge status={attempt.status} />
                   </div>
@@ -228,7 +228,7 @@ function StepDetails({ step, now }: { step: TaskStep; now: number }) {
             ) : <p className="text-sm text-muted-foreground">尚未执行</p>}
           </section>
           <section className="space-y-2"><h3 className="flex items-center gap-2 text-sm font-medium"><TerminalIcon className="size-4" />命令</h3><pre className="overflow-x-auto rounded-lg border bg-zinc-950 p-4 font-mono text-xs leading-5 text-zinc-100 whitespace-pre-wrap">{step.command || "尚未生成命令"}</pre></section>
-          <section className="space-y-2"><h3 className="flex items-center gap-2 text-sm font-medium"><FileIcon className="size-4" />产物</h3>{step.outputs.length ? <ul className="space-y-1 font-mono text-xs text-muted-foreground">{step.outputs.map((output) => <li key={output}>{output}</li>)}</ul> : <p className="text-sm text-muted-foreground">暂无产物</p>}</section>
+          <section className="space-y-2"><h3 className="flex items-center gap-2 text-sm font-medium"><FileIcon className="size-4" />产物</h3>{step.outputs.length ? <ul className="space-y-1 font-mono text-xs break-words text-muted-foreground [overflow-wrap:anywhere]">{step.outputs.map((output) => <li key={output}>{output}</li>)}</ul> : <p className="text-sm text-muted-foreground">暂无产物</p>}</section>
           <section className="space-y-2"><h3 className="text-sm font-medium">日志</h3><pre className="min-h-48 overflow-x-auto rounded-lg border bg-zinc-950 p-4 font-mono text-xs leading-5 text-zinc-100 whitespace-pre-wrap">{step.log_tail || step.error || "暂无日志"}</pre></section>
         </div>
       </ScrollArea>

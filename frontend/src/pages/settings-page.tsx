@@ -387,10 +387,10 @@ export function SettingsPage() {
             </div>
 
             {notice ? (
-              <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm">{notice}</div>
+              <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm [overflow-wrap:anywhere]">{notice}</div>
             ) : null}
             {error ? (
-              <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+              <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive [overflow-wrap:anywhere]">
                 {error}
               </div>
             ) : null}

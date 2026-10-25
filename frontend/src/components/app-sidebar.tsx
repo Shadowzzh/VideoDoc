@@ -58,7 +58,7 @@ export function AppSidebar({ tasks, loading, activeTaskId, onNavigate }: AppSide
                   <StatusBadge status={task.status} />
                   <span className="text-[10px] text-muted-foreground">{formatDate(task.created_at)}</span>
                 </div>
-                <p className="line-clamp-2 text-sm font-medium leading-5">{taskTitle(task)}</p>
+                <p className="line-clamp-2 text-sm font-medium leading-5 [overflow-wrap:anywhere]">{taskTitle(task)}</p>
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
                   <ListVideoIcon className="size-3" />
                   <span className="truncate">{task.metadata.extractor || "等待识别"}</span>

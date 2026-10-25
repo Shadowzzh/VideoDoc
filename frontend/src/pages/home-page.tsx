@@ -97,7 +97,7 @@ export function HomePage() {
                     <a href={primaryTaskHref(task)} className="block pr-10">
                       <CardHeader className="gap-3">
                         <div className="flex items-center justify-between gap-3"><StatusBadge status={task.status} /><span className="text-xs text-muted-foreground">{formatDate(task.created_at)}</span></div>
-                        <CardTitle className="line-clamp-2 text-base leading-6">{taskTitle(task)}</CardTitle>
+                        <CardTitle className="line-clamp-2 text-base leading-6 [overflow-wrap:anywhere]">{taskTitle(task)}</CardTitle>
                         <CardDescription className="flex items-center justify-between gap-3">
                           <span className="truncate">{task.metadata.extractor || "等待识别来源"}</span>
                           {timing.totalMs > 0 ? <span className="shrink-0 font-mono text-xs">{formatDurationMilliseconds(timing.totalMs)}</span> : null}

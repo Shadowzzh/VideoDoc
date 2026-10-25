@@ -26,7 +26,7 @@ export function ErrorState({
       <CardHeader className="pb-0">
         <CardTitle className={`flex items-center gap-2 text-base ${destructive ? "text-destructive" : ""}`}>{icon ?? <AlertCircleIcon className="size-4" />}{title}</CardTitle>
       </CardHeader>
-      <CardContent className="text-sm text-muted-foreground">{message}</CardContent>
+      <CardContent className="text-sm whitespace-pre-line text-muted-foreground [overflow-wrap:anywhere]">{message}</CardContent>
     </Card>
   )
 }

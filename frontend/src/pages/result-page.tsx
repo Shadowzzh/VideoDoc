@@ -496,7 +496,7 @@ function ResultOutlineSidebar({
       </div>
       <div className="space-y-1 border-b border-sidebar-border px-4 py-4">
         <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><ListTreeIcon className="size-3.5" />文章大纲</div>
-        <p className="line-clamp-2 text-sm font-semibold leading-5">{resultTitle(result)}</p>
+        <p className="line-clamp-2 text-sm font-semibold leading-5 [overflow-wrap:anywhere]">{resultTitle(result)}</p>
       </div>
       <ScrollArea className="min-h-0 flex-1 px-2 py-3">
         <div className="space-y-1">
@@ -511,7 +511,7 @@ function ResultOutlineSidebar({
                   <span className="font-mono text-[10px] text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
                   <span className="font-mono text-[10px] text-muted-foreground">{section.start_time}</span>
                 </div>
-                <p className="text-sm font-medium leading-5">{section.title}</p>
+                <p className="text-sm font-medium leading-5 [overflow-wrap:anywhere]">{section.title}</p>
               </button>
             )
           })}

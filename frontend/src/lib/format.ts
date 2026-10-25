@@ -78,6 +78,21 @@ export function taskTitle(task: VideoTask): string {
   return task.article_title || task.metadata.title || task.url
 }
 
+/**
+ * 弹窗这类固定宽度容器里用的短标题。
+ *
+ * taskTitle 在没有文章标题时会退回原始 URL，抖音/YouTube 的分享链接动辄两三百
+ * 字符且没有空格，塞进 AlertDialog 会直接撑出白框边界；这里按字符数截断，保留
+ * 前段的域名与路径（用户据此能认出是哪条任务），砍掉后半段追踪参数。
+ */
+export function taskTitleShort(task: VideoTask, max = 60): string {
+  const title = taskTitle(task)
+  if (title.length <= max) {
+    return title
+  }
+  return `${title.slice(0, max - 1)}…`
+}
+
 export function resultTitle(result: VideoResult): string {
   return result.article_title || result.outline.title || result.metadata.title || "未命名文章"
 }
