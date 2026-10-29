@@ -158,12 +158,13 @@ export function ResultPage({ taskId }: { taskId: string }) {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [desktop, result, videoExpanded, videoVisible])
 
-  const seekTo = (seconds: number) => {
+  const seekTo = (seconds: number, options: { autoPlay?: boolean } = {}) => {
     if (desktop) {
       setVideoVisible(true)
     } else {
       setMobileVideoOpen(true)
     }
+    const autoPlay = options.autoPlay !== false
     window.setTimeout(() => {
       const video = videoRef.current
       if (!video) {
@@ -171,7 +172,10 @@ export function ResultPage({ taskId }: { taskId: string }) {
       }
       const apply = () => {
         video.currentTime = seconds
-        void video.play().catch(() => undefined)
+        // 大纲跳转只在视频本来就在播放时继续播放，暂停状态下保持暂停。
+        if (autoPlay || !video.paused) {
+          void video.play().catch(() => undefined)
+        }
       }
       if (video.readyState === 0) {
         video.addEventListener("loadedmetadata", apply, { once: true })
@@ -185,7 +189,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
     pendingArticleSectionRef.current = section.id
     setActiveView("article")
     setArticleScrollRequest((value) => value + 1)
-    seekTo(section.start_sec)
+    seekTo(section.start_sec, { autoPlay: false })
   }
 
   useLayoutEffect(() => {
