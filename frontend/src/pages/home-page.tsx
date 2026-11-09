@@ -1,4 +1,4 @@
-import { ArrowRightIcon, LinkIcon, PlusIcon, VideoIcon } from "lucide-react"
+import { ArrowRightIcon, LinkIcon, LoaderCircleIcon, PlusIcon, VideoIcon } from "lucide-react"
 import { useState, type FormEvent } from "react"
 
 import { AppShell } from "@/components/app-shell"
@@ -126,6 +126,12 @@ export function HomePage() {
                           <span className="truncate">{task.metadata.extractor || "等待识别来源"}</span>
                           {timing.totalMs > 0 ? <span className="shrink-0 font-mono text-xs">{formatDurationMilliseconds(timing.totalMs)}</span> : null}
                         </CardDescription>
+                        {task.steps?.some((step) => step.key === "subtitle" && step.status === "running") ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <LoaderCircleIcon className="size-3 animate-spin" />
+                            字幕生成中
+                          </span>
+                        ) : null}
                       </CardHeader>
                     </a>
                     <div className="absolute right-3 top-3">

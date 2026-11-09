@@ -12,7 +12,7 @@ import {
   PlayIcon,
   VideoIcon,
 } from "lucide-react"
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type RefObject } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type RefObject } from "react"
 
 import { AppShell } from "@/components/app-shell"
 import { ErrorState } from "@/components/error-state"
@@ -30,16 +30,31 @@ import { useResult } from "@/hooks/use-result"
 import { useTask } from "@/hooks/use-task"
 import { mediaHref, taskHref } from "@/lib/api"
 import { formatSeconds, resultTitle } from "@/lib/format"
+import {
+  INITIAL_FLOATING_VIDEO_MODE_STATE,
+  enterFloatingVideoFullscreen,
+  exitFloatingVideoFullscreen,
+  hideFloatingVideo,
+  revealFloatingVideo,
+  toggleFloatingVideoSize,
+  type FloatingVideoMode,
+  type FloatingVideoModeState,
+} from "@/lib/floating-video-window"
 import { matchSectionAnchors, pickActiveSectionId } from "@/lib/outline-anchors"
 import type { OutlineSection, VideoResult, VideoTask } from "@/types"
 
 export function ResultPage({ taskId }: { taskId: string }) {
-  const { result, error, loading } = useResult(taskId)
+  const { result, error, loading, refresh: reload } = useResult(taskId)
   // 结果页也要能补字幕，所以额外拿一次任务（含 artifacts）。
   const taskState = useTask(taskId)
+
+  // 字幕生成完要同时刷新任务状态和结果，播放器才会挂上新字幕轨。
+  function handleSubtitleChanged() {
+    taskState.refresh()
+    reload()
+  }
   const desktop = useMediaQuery("(min-width: 1024px)")
-  const [videoVisible, setVideoVisible] = useState(true)
-  const [videoExpanded, setVideoExpanded] = useState(false)
+  const [videoModeState, setVideoModeState] = useState<FloatingVideoModeState>(INITIAL_FLOATING_VIDEO_MODE_STATE)
   const [videoPlaying, setVideoPlaying] = useState(false)
   const [mobileVideoOpen, setMobileVideoOpen] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -47,6 +62,8 @@ export function ResultPage({ taskId }: { taskId: string }) {
   const [articleScrollRequest, setArticleScrollRequest] = useState(0)
   const [readingSectionId, setReadingSectionId] = useState<string | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  // 浏览器全屏作用在浮窗内部元素上，由子组件把节点挂进来。
+  const fullscreenElementRef = useRef<HTMLElement | null>(null)
   const articleRef = useRef<HTMLElement | null>(null)
   const pendingArticleSectionRef = useRef<string | null>(null)
 
@@ -85,34 +102,72 @@ export function ResultPage({ taskId }: { taskId: string }) {
     }
   }, [result])
 
-  const togglePlayback = () => {
+  const togglePlayback = useCallback(() => {
     const video = videoRef.current
     if (!video) {
       return
     }
     if (video.paused) {
-      setVideoVisible(true)
+      setVideoModeState(revealFloatingVideo)
       void video.play().catch(() => undefined)
     } else {
       video.pause()
     }
-  }
+  }, [])
 
-  const toggleVideoSize = () => {
-    if (!videoVisible) {
-      setVideoVisible(true)
-      setVideoExpanded(false)
+  // V 每次只走一档：关闭 → 最大化 → 关闭；小窗 → 最大化 → 小窗；全屏 → 进入全屏前的档位。
+  const toggleVideoSize = useCallback(() => {
+    if (videoModeState.mode === "fullscreen") {
+      void document.exitFullscreen().catch(() => undefined)
+    }
+    const next = toggleFloatingVideoSize(videoModeState)
+    if (next.mode === "hidden" && videoModeState.mode === "maximized") {
+      videoRef.current?.pause()
+    }
+    setVideoModeState(next)
+  }, [videoModeState])
+
+  const toggleVideoFullscreen = useCallback(() => {
+    if (videoModeState.mode === "fullscreen") {
+      void document.exitFullscreen().catch(() => undefined)
+      setVideoModeState(exitFloatingVideoFullscreen)
       return
     }
-    setVideoVisible(true)
-    setVideoExpanded((value) => !value)
-  }
+    const element = fullscreenElementRef.current
+    if (!element) {
+      return
+    }
+    const previous = videoModeState
+    setVideoModeState(enterFloatingVideoFullscreen)
+    // 先让元素渲染为可见，再在用户手势仍然有效时请求浏览器全屏。
+    window.requestAnimationFrame(() => {
+      void element.requestFullscreen().catch(() => setVideoModeState(previous))
+    })
+  }, [videoModeState])
 
-  const hideVideo = () => {
+  const hideVideo = useCallback(() => {
     videoRef.current?.pause()
-    setVideoExpanded(false)
-    setVideoVisible(false)
-  }
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined)
+    }
+    setVideoModeState(hideFloatingVideo)
+  }, [])
+
+  // 浏览器原生 Esc、F11 退出全屏时不经过按钮，这里把状态收敛回进入全屏前的档位。
+  useEffect(() => {
+    if (!desktop) {
+      return
+    }
+    const handleFullscreenChange = () => {
+      const element = fullscreenElementRef.current
+      if (element && document.fullscreenElement === element) {
+        return
+      }
+      setVideoModeState(exitFloatingVideoFullscreen)
+    }
+    document.addEventListener("fullscreenchange", handleFullscreenChange)
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange)
+  }, [desktop])
 
   useEffect(() => {
     if (!desktop || !result) {
@@ -132,7 +187,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
           return
         }
         if (video.paused) {
-          setVideoVisible(true)
+          setVideoModeState(revealFloatingVideo)
           void video.play().catch(() => undefined)
         } else {
           video.pause()
@@ -144,27 +199,27 @@ export function ResultPage({ taskId }: { taskId: string }) {
       }
       if (event.code === "KeyV") {
         event.preventDefault()
-        if (!videoVisible) {
-          setVideoVisible(true)
-          setVideoExpanded(false)
-          return
-        }
-        setVideoVisible(true)
-        setVideoExpanded((value) => !value)
+        toggleVideoSize()
         return
       }
-      if (event.key === "Escape" && videoExpanded) {
+      if (event.code === "KeyF") {
         event.preventDefault()
-        setVideoExpanded(false)
+        toggleVideoFullscreen()
+        return
+      }
+      // 全屏时 Esc 由浏览器接管，不能再拦截，否则会和退出全屏冲突。
+      if (event.key === "Escape" && !document.fullscreenElement) {
+        event.preventDefault()
+        setVideoModeState((state) => (state.mode === "maximized" ? toggleFloatingVideoSize(state) : state))
       }
     }
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [desktop, result, videoExpanded, videoVisible])
+  }, [desktop, result, toggleVideoFullscreen, toggleVideoSize])
 
   const seekTo = (seconds: number, options: { autoPlay?: boolean } = {}) => {
     if (desktop) {
-      setVideoVisible(true)
+      setVideoModeState(revealFloatingVideo)
     } else {
       setMobileVideoOpen(true)
     }
@@ -266,10 +321,10 @@ export function ResultPage({ taskId }: { taskId: string }) {
   }, [activeView, result])
 
   useLayoutEffect(() => {
-    if (desktop && videoVisible && videoExpanded) {
+    if (desktop && videoModeState.mode === "maximized") {
       videoRef.current?.focus({ preventScroll: true })
     }
-  }, [desktop, videoExpanded, videoVisible])
+  }, [desktop, videoModeState.mode])
 
   const handleArticleClick = (event: MouseEvent<HTMLElement>) => {
     const target = event.target
@@ -312,10 +367,9 @@ export function ResultPage({ taskId }: { taskId: string }) {
           taskId={taskId}
           result={result}
           task={taskState.task}
-          onChanged={taskState.refresh}
+          onChanged={handleSubtitleChanged}
           desktop={desktop}
-          videoVisible={videoVisible}
-          videoExpanded={videoExpanded}
+          videoMode={videoModeState.mode}
           videoPlaying={videoPlaying}
           onTogglePlayback={togglePlayback}
           onToggleVideoSize={toggleVideoSize}
@@ -338,9 +392,10 @@ export function ResultPage({ taskId }: { taskId: string }) {
             result={result}
             currentSection={playbackSection}
             videoRef={videoRef}
-            visible={videoVisible}
-            expanded={videoExpanded}
+            fullscreenElementRef={fullscreenElementRef}
+            mode={videoModeState.mode}
             onToggleSize={toggleVideoSize}
+            onToggleFullscreen={toggleVideoFullscreen}
             onHide={hideVideo}
             subtitleVtt={result.subtitle_vtt}
           />
@@ -369,8 +424,7 @@ interface ResultHeaderProps {
   task: VideoTask | null
   onChanged?: () => void
   desktop: boolean
-  videoVisible: boolean
-  videoExpanded: boolean
+  videoMode: FloatingVideoMode
   videoPlaying: boolean
   onTogglePlayback: () => void
   onToggleVideoSize: () => void
@@ -383,8 +437,7 @@ function ResultHeader({
   task,
   onChanged,
   desktop,
-  videoVisible,
-  videoExpanded,
+  videoMode,
   videoPlaying,
   onTogglePlayback,
   onToggleVideoSize,
@@ -392,19 +445,21 @@ function ResultHeader({
 }: ResultHeaderProps) {
   let sizeLabel = "放大视频"
   let SizeIcon = Maximize2Icon
-  if (videoExpanded) {
+  if (videoMode === "maximized") {
     sizeLabel = "缩小视频"
     SizeIcon = Minimize2Icon
+  } else if (videoMode === "fullscreen") {
+    sizeLabel = "退出全屏"
+    SizeIcon = Minimize2Icon
+  } else if (videoMode === "hidden") {
+    sizeLabel = "显示视频"
+    SizeIcon = Maximize2Icon
   }
   let PlaybackIcon = PlayIcon
   let playbackLabel = "播放"
   if (videoPlaying) {
     PlaybackIcon = PauseIcon
     playbackLabel = "暂停"
-  }
-  let videoSizeLabel = sizeLabel
-  if (!videoVisible) {
-    videoSizeLabel = "显示视频"
   }
   return (
     <header className="flex shrink-0 items-center justify-between gap-4 border-b bg-background px-4 py-3 md:px-6">
@@ -429,7 +484,7 @@ function ResultHeader({
             </Button>
             <Button variant="outline" size="sm" onClick={onToggleVideoSize}>
               <SizeIcon />
-              {videoSizeLabel}
+              {sizeLabel}
               <ShortcutKey>V</ShortcutKey>
             </Button>
           </>

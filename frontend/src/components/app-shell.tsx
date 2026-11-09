@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { SubtitleWatcher } from "@/components/subtitle-watcher"
 import { Toaster } from "@/components/toast"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
@@ -78,6 +79,7 @@ export function AppShell({ children, activeTaskId, renderSidebar, sidebarLabel =
           {mobileSidebar}
         </SheetContent>
       </Sheet>
+      <SubtitleWatcher tasks={tasks} />
       <Toaster />
     </div>
   )

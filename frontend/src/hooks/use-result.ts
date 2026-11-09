@@ -7,6 +7,7 @@ export function useResult(taskId: string) {
   const [result, setResult] = useState<VideoResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshVersion, setRefreshVersion] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -30,7 +31,12 @@ export function useResult(taskId: string) {
     return () => {
       active = false
     }
-  }, [taskId])
+  }, [taskId, refreshVersion])
 
-  return { result, error, loading }
+  // 字幕生成完要重新拉结果，播放器才会挂上新的字幕轨。
+  function refresh() {
+    setRefreshVersion((value) => value + 1)
+  }
+
+  return { result, error, loading, refresh }
 }

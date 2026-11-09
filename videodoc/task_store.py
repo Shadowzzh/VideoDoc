@@ -34,6 +34,10 @@ METRICS_FILENAME = "metrics.jsonl"
 
 # 核心流水线步骤。可插拔能力声明的步骤由 TaskStore 按 ``after`` 锚点插到对应位置：
 # 这里没有图像识别，因此**移除该能力后核心流水线照样跑完**。
+# 这些步骤不参与任务进度百分比：补字幕是事后动作，计入会让百分比倒退。
+PROGRESS_EXCLUDED_STEPS = {"subtitle"}
+
+
 STEP_DEFINITIONS = (
     ("probe", "解析来源与元数据"),
     ("download", "下载并合并视频"),
@@ -505,11 +509,18 @@ class TaskStore:
     def public(self, task_id: str, include_logs: bool = False) -> dict[str, Any]:
         task = self.get(task_id)
         task["article_title"] = self._article_title(task_id, task)
-        completed = sum(step["status"] in {"completed", "skipped"} for step in task["steps"])
+        # 补字幕会把 subtitle 从跳过状态重置为 pending，计入进度条会让百分比倒退；
+        # 它也不属于主流程，所以进度只统计其余步骤。
+        counted = [step for step in task["steps"] if step["key"] not in PROGRESS_EXCLUDED_STEPS]
+        finished = sum(
+            1
+            for step in counted
+            if step["status"] not in {"pending", "running", "failed", "interrupted", "cancelled"}
+        )
         task["progress"] = {
-            "completed": completed,
-            "total": len(task["steps"]),
-            "percent": round(completed / len(task["steps"]) * 100),
+            "done": finished,
+            "total": len(counted),
+            "percent": round(finished / max(1, len(counted)) * 100),
         }
         # 阶段耗时由后端统一算，避免各消费方（页面、CLI、分析脚本）各算一套口径。
         for step in task["steps"]:
