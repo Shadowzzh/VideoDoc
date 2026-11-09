@@ -44,6 +44,18 @@ function phaseOf(task: VideoTask): Phase {
  * 补字幕不改变任务状态，所以按钮必须自己盯着 subtitle 步骤：
  * 提交后显示已用时，完成/失败就地反映，刷新页面后也能从后端状态恢复。
  */
+function hasMode(task: VideoTask, mode: "zh" | "bilingual"): boolean {
+  const artifacts = task.artifacts ?? {}
+  if (artifacts[`subtitle_${mode}_vtt`]) {
+    return true
+  }
+  // 迁移前只有无前缀产物，按任务记录的模式归属。
+  if (artifacts["subtitle_vtt"] && (task.subtitle_mode ?? "zh") === mode) {
+    return true
+  }
+  return false
+}
+
 export function SubtitleMenuButton({ task, onChanged, disabled }: SubtitleMenuButtonProps) {
   const [phase, setPhase] = useState<Phase>(() => phaseOf(task))
   const [startedAt, setStartedAt] = useState<number | null>(null)
@@ -139,10 +151,12 @@ export function SubtitleMenuButton({ task, onChanged, disabled }: SubtitleMenuBu
         <DropdownMenuItem onClick={() => void run("zh")}>
           <CaptionsIcon />
           中文字幕
+          {hasMode(task, "zh") ? <span className="ml-auto text-xs text-muted-foreground">已有</span> : null}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => void run("bilingual")}>
           <LanguagesIcon />
           中英双语
+          {hasMode(task, "bilingual") ? <span className="ml-auto text-xs text-muted-foreground">已有</span> : null}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

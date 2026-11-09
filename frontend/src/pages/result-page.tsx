@@ -18,6 +18,7 @@ import { AppShell } from "@/components/app-shell"
 import { ErrorState } from "@/components/error-state"
 import { FloatingVideoAssistant } from "@/components/floating-video-assistant"
 import { SubtitleMenuButton } from "@/components/subtitle-menu-button"
+import { SubtitleTracks } from "@/components/subtitle-tracks"
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -41,7 +42,7 @@ import {
   type FloatingVideoModeState,
 } from "@/lib/floating-video-window"
 import { matchSectionAnchors, pickActiveSectionId } from "@/lib/outline-anchors"
-import type { OutlineSection, VideoResult, VideoTask } from "@/types"
+import type { OutlineSection, SubtitleTrack, VideoResult, VideoTask } from "@/types"
 
 export function ResultPage({ taskId }: { taskId: string }) {
   const { result, error, loading, refresh: reload } = useResult(taskId)
@@ -414,7 +415,8 @@ export function ResultPage({ taskId }: { taskId: string }) {
             onToggleSize={handleSizeButton}
             onToggleFullscreen={toggleVideoFullscreen}
             onHide={hideVideo}
-            subtitleVtt={result.subtitle_vtt}
+            subtitleTracks={result.subtitles}
+            subtitleMode={result.subtitle_mode}
           />
         ) : (
           <Sheet open={mobileVideoOpen} onOpenChange={setMobileVideoOpen}>
@@ -425,7 +427,8 @@ export function ResultPage({ taskId }: { taskId: string }) {
                 result={result}
                 currentSection={playbackSection}
                 videoRef={videoRef}
-                subtitleVtt={result.subtitle_vtt}
+                subtitleTracks={result.subtitles}
+                subtitleMode={result.subtitle_mode}
               />
             </SheetContent>
           </Sheet>
@@ -615,17 +618,16 @@ interface VideoAssistantProps {
   result: VideoResult
   currentSection: OutlineSection | null
   videoRef: RefObject<HTMLVideoElement | null>
-  subtitleVtt?: string | null
+  subtitleTracks?: SubtitleTrack[]
+  subtitleMode?: string | null
 }
 
-function MobileVideoAssistant({ taskId, result, currentSection, videoRef, subtitleVtt }: VideoAssistantProps) {
+function MobileVideoAssistant({ taskId, result, currentSection, videoRef, subtitleTracks, subtitleMode }: VideoAssistantProps) {
   return (
     <aside className="bg-background p-4 pt-12">
       <Card className="gap-4 overflow-hidden py-0">
         <video ref={videoRef} tabIndex={0} controls preload="metadata" src={mediaHref(taskId, result.video)} className="aspect-video w-full bg-black object-contain">
-          {subtitleVtt ? (
-            <track kind="subtitles" srcLang="zh" label="中文" src={mediaHref(taskId, subtitleVtt)} default />
-          ) : null}
+          <SubtitleTracks taskId={taskId} tracks={subtitleTracks} mode={subtitleMode} />
         </video>
         <CardHeader className="pb-4">
           <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><VideoIcon className="size-3.5" />辅助视频</div>

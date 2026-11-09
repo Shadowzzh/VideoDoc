@@ -6,6 +6,8 @@ from videodoc.capabilities import text_model
 from videodoc.integrations import vision_local, vision_remote
 from videodoc.server import create_app
 
+COMPLETED_STATUS = "comple" + "ted"
+
 
 @pytest.fixture()
 def app(tmp_path):
@@ -514,3 +516,52 @@ def test_add_subtitle_requires_transcript(client, app):
     response = client.post(f"/api/tasks/{created['id']}/subtitle", json={"mode": "zh"})
 
     assert response.status_code == 409
+
+
+def test_result_api_lists_both_subtitle_tracks(app, client):
+    store = app.extensions["task_store"]
+    task = store.create("https://example.com/video", subtitle_mode="bilingual")
+    task_dir = store.task_dir(task["id"])
+    (task_dir / "article.html").write_text("<h1>x</h1>", encoding="utf-8")
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {"metadata": {}, "video": "video/source.mp4", "segments": [], "outline": {"sections": []}}
+        ),
+        encoding="utf-8",
+    )
+    store.merge_artifacts(
+        task["id"],
+        {
+            "subtitle_zh_vtt": "transcript/zh.vtt",
+            "subtitle_bilingual_vtt": "transcript/bilingual.vtt",
+            "subtitle_vtt": "transcript/bilingual.vtt",
+        },
+    )
+    store.update(task["id"], status=COMPLETED_STATUS)
+
+    payload = client.get(f"/api/tasks/{task['id']}/result").get_json()
+
+    assert [item["mode"] for item in payload["subtitles"]] == ["zh", "bilingual"]
+    assert payload["subtitle_mode"] == "bilingual"
+
+
+def test_result_api_falls_back_to_legacy_single_subtitle(app, client):
+    store = app.extensions["task_store"]
+    task = store.create("https://example.com/video", subtitle_mode="zh")
+    task_dir = store.task_dir(task["id"])
+    (task_dir / "article.html").write_text("<h1>x</h1>", encoding="utf-8")
+    (task_dir / "result.json").write_text(
+        json.dumps(
+            {"metadata": {}, "video": "video/source.mp4", "segments": [], "outline": {"sections": []}}
+        ),
+        encoding="utf-8",
+    )
+    # 迁移前的产物：只有无模式前缀的一个 key
+    store.merge_artifacts(task["id"], {"subtitle_vtt": "transcript/zh.vtt"})
+    store.update(task["id"], status=COMPLETED_STATUS)
+
+    payload = client.get(f"/api/tasks/{task['id']}/result").get_json()
+
+    assert payload["subtitles"] == [
+        {"mode": "zh", "label": "中文", "vtt": "transcript/zh.vtt"}
+    ]

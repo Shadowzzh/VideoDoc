@@ -188,13 +188,23 @@ export interface ArticleImage {
   vision_elapsed_ms?: number
 }
 
+export interface SubtitleTrack {
+  mode: string
+  label: string
+  vtt: string
+}
+
 export interface VideoResult {
   metadata: TaskMetadata
   article_title?: string
   video: string
-  /** 字幕轨（VTT 相对路径）；没有生成字幕时为 null。 */
+  /** 当前字幕轨（最近一次生成）；没有字幕时为 null。 */
   subtitle_vtt?: string | null
   subtitle_srt?: string | null
+  /** 已生成的全部字幕轨：中文与中英可共存。 */
+  subtitles?: SubtitleTrack[]
+  /** 最近一次选择的模式，用于决定默认轨。 */
+  subtitle_mode?: string | null
   segments: TranscriptSegment[]
   outline: VideoOutline
   images: ArticleImage[]

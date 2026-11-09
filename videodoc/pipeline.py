@@ -1248,9 +1248,15 @@ class VideoArticlePipeline:
         subtitles_module.write_srt(rows, srt_path, bilingual=bilingual)
         subtitles_module.write_vtt(rows, vtt_path, bilingual=bilingual)
 
+        srt_rel = srt_path.relative_to(self.task_dir).as_posix()
+        vtt_rel = vtt_path.relative_to(self.task_dir).as_posix()
         artifacts = {
-            "subtitle_srt": srt_path.relative_to(self.task_dir).as_posix(),
-            "subtitle_vtt": vtt_path.relative_to(self.task_dir).as_posix(),
+            # 按模式分别登记：先生成中英再生成中文时两套都保留，播放器可切换。
+            f"subtitle_{suffix}_srt": srt_rel,
+            f"subtitle_{suffix}_vtt": vtt_rel,
+            # 兼容别名：始终指向最近一次生成的字幕。
+            "subtitle_srt": srt_rel,
+            "subtitle_vtt": vtt_rel,
         }
         self.store.merge_artifacts(self.task_id, artifacts)
         self._note_step(SUBTITLE_STEP, outputs=list(artifacts.values()))

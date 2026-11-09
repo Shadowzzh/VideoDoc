@@ -440,7 +440,25 @@ def create_app(config: dict | None = None) -> Flask:
             f'src="/tasks/{task_id}/media/',
         )
         # 字幕 VTT 走 media 路由；没有字幕时前端不挂 track。
+        # 两套字幕可共存（中文 / 中英），前端据此渲染多条 <track>。
         artifacts = task.get("artifacts") or {}
+        subtitles: list[dict[str, str]] = []
+        for mode, label in (("zh", "中文"), ("bilingual", "中英")):
+            vtt = artifacts.get(f"subtitle_{mode}_vtt")
+            if vtt:
+                subtitles.append({"mode": mode, "label": label, "vtt": vtt})
+        if not subtitles and artifacts.get("subtitle_vtt"):
+            # 迁移前生成的字幕没有模式前缀，按任务记录的模式补一条。
+            legacy_mode = str(task.get("subtitle_mode") or "zh")
+            subtitles.append(
+                {
+                    "mode": legacy_mode,
+                    "label": "中英" if legacy_mode == "bilingual" else "中文",
+                    "vtt": artifacts["subtitle_vtt"],
+                }
+            )
+        result["subtitles"] = subtitles
+        result["subtitle_mode"] = task.get("subtitle_mode")
         result["subtitle_vtt"] = artifacts.get("subtitle_vtt")
         result["subtitle_srt"] = artifacts.get("subtitle_srt")
         return jsonify(result)
