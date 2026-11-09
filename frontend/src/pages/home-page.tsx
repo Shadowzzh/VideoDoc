@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
-import { createTask, primaryTaskHref, taskHref } from "@/lib/api"
+import { createTask, primaryTaskHref, taskHref, type SubtitleMode } from "@/lib/api"
 import { formatDate, formatDurationMilliseconds, taskTitle } from "@/lib/format"
 import { taskTiming } from "@/lib/timing"
 import { useTasks } from "@/hooks/use-tasks"
@@ -18,6 +18,7 @@ import { useTasks } from "@/hooks/use-tasks"
 export function HomePage() {
   const { tasks, error, loading } = useTasks()
   const [url, setUrl] = useState("")
+  const [subtitleMode, setSubtitleMode] = useState<SubtitleMode>("none")
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -26,7 +27,7 @@ export function HomePage() {
     setSubmitting(true)
     setSubmitError(null)
     try {
-      const task = await createTask(url.trim())
+      const task = await createTask(url.trim(), subtitleMode)
       window.location.assign(taskHref(task.id))
     } catch (reason) {
       setSubmitError(reason instanceof Error ? reason.message : "创建任务失败")
@@ -63,6 +64,16 @@ export function HomePage() {
                     autoFocus
                   />
                 </div>
+                <select
+                  value={subtitleMode}
+                  onChange={(event) => setSubtitleMode(event.target.value as SubtitleMode)}
+                  aria-label="字幕"
+                  className="h-9 shrink-0 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                >
+                  <option value="none">不加字幕</option>
+                  <option value="zh">中文字幕</option>
+                  <option value="bilingual">中英双语</option>
+                </select>
                 <Button type="submit" disabled={submitting || !url.trim()}>
                   {submitting ? "创建中…" : "开始处理"}<ArrowRightIcon />
                 </Button>

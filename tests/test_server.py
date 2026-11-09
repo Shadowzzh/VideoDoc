@@ -469,3 +469,48 @@ def test_resume_accepts_cancelled_task_and_resets_cancellation(client, app):
     resumed = store.get(task["id"])
     assert resumed["status"] == "queued"
     assert resumed["cancel_requested_at"] is None
+
+
+def test_create_task_accepts_subtitle_mode(client, app):
+    response = client.post(
+        "/api/tasks",
+        json={"url": "https://example.com/v", "subtitle_mode": "bilingual"},
+    )
+
+    assert response.status_code == 202
+    task = app.extensions["task_store"].get(response.get_json()["id"])
+    assert task["subtitle_mode"] == "bilingual"
+    assert any(step["key"] == "subtitle" for step in task["steps"])
+
+
+def test_create_task_coerces_unknown_subtitle_mode(client, app):
+    response = client.post(
+        "/api/tasks",
+        json={"url": "https://example.com/v", "subtitle_mode": "bogus"},
+    )
+
+    assert response.status_code == 202
+    task = app.extensions["task_store"].get(response.get_json()["id"])
+    assert task["subtitle_mode"] == "none"
+
+
+def test_add_subtitle_rejects_none_mode(client, app):
+    created = client.post("/api/tasks", json={"url": "https://example.com/v"}).get_json()
+
+    response = client.post(f"/api/tasks/{created['id']}/subtitle", json={"mode": "none"})
+
+    assert response.status_code == 400
+
+
+def test_add_subtitle_unknown_task(client):
+    response = client.post("/api/tasks/20260101-000000-deadbeef/subtitle", json={"mode": "zh"})
+
+    assert response.status_code == 404
+
+
+def test_add_subtitle_requires_transcript(client, app):
+    created = client.post("/api/tasks", json={"url": "https://example.com/v"}).get_json()
+
+    response = client.post(f"/api/tasks/{created['id']}/subtitle", json={"mode": "zh"})
+
+    assert response.status_code == 409

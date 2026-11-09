@@ -336,6 +336,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
             expanded={videoExpanded}
             onToggleSize={toggleVideoSize}
             onHide={hideVideo}
+            subtitleVtt={result.subtitle_vtt}
           />
         ) : (
           <Sheet open={mobileVideoOpen} onOpenChange={setMobileVideoOpen}>
@@ -346,6 +347,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
                 result={result}
                 currentSection={playbackSection}
                 videoRef={videoRef}
+                subtitleVtt={result.subtitle_vtt}
               />
             </SheetContent>
           </Sheet>
@@ -530,13 +532,18 @@ interface VideoAssistantProps {
   result: VideoResult
   currentSection: OutlineSection | null
   videoRef: RefObject<HTMLVideoElement | null>
+  subtitleVtt?: string | null
 }
 
-function MobileVideoAssistant({ taskId, result, currentSection, videoRef }: VideoAssistantProps) {
+function MobileVideoAssistant({ taskId, result, currentSection, videoRef, subtitleVtt }: VideoAssistantProps) {
   return (
     <aside className="bg-background p-4 pt-12">
       <Card className="gap-4 overflow-hidden py-0">
-        <video ref={videoRef} tabIndex={0} controls preload="metadata" src={mediaHref(taskId, result.video)} className="aspect-video w-full bg-black object-contain" />
+        <video ref={videoRef} tabIndex={0} controls preload="metadata" src={mediaHref(taskId, result.video)} className="aspect-video w-full bg-black object-contain">
+          {subtitleVtt ? (
+            <track kind="subtitles" srcLang="zh" label="中文" src={mediaHref(taskId, subtitleVtt)} default />
+          ) : null}
+        </video>
         <CardHeader className="pb-4">
           <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><VideoIcon className="size-3.5" />辅助视频</div>
           <CardTitle className="text-base leading-6">{currentSection?.title || "等待播放"}</CardTitle>

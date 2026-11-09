@@ -308,3 +308,22 @@ def test_legacy_task_without_cancel_field_normalizes_to_none(tmp_path):
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     assert store.get(task["id"])["cancel_requested_at"] is None
+
+
+def test_ensure_step_inserts_after_anchor(tmp_path):
+    from videodoc.task_store import TaskStore
+
+    store = TaskStore(tmp_path / "tasks")
+    task = store.create("https://example.com/v")
+    # 模拟迁移前的老任务：删掉字幕步骤位
+    store.update(task["id"], steps=[s for s in task["steps"] if s["key"] != "subtitle"])
+    assert not any(s["key"] == "subtitle" for s in store.get(task["id"])["steps"])
+
+    added = store.ensure_step(task["id"], "subtitle", "生成中文字幕", after="transcribe")
+    keys = [s["key"] for s in store.get(task["id"])["steps"]]
+
+    assert added is True
+    assert keys.index("subtitle") == keys.index("transcribe") + 1
+    # 幂等：再调一次不重复插入
+    assert store.ensure_step(task["id"], "subtitle", "生成中文字幕", after="transcribe") is False
+    assert keys == [s["key"] for s in store.get(task["id"])["steps"]]

@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import markdown
 
 from . import capabilities as capability_registry
+from . import subtitles as subtitles_module
 from . import settings as settings_module
 from .capabilities import text_model as text_model_module
 from .cancellation import TaskCancellation, TaskCancelled, run_interruptible
@@ -39,6 +40,9 @@ SRT_TIME_PATTERN = re.compile(
 
 # 「图像证据」步骤位：能力自己声明占这个位；产物沿用 ocr/ocr.json 以兼容历史任务。
 IMAGE_EVIDENCE_STEP = "ocr"
+
+# 字幕步骤：紧跟转写，属于核心流水线而非可插拔能力。
+SUBTITLE_STEP = "subtitle"
 
 
 class PipelineError(RuntimeError):
@@ -515,6 +519,7 @@ class VideoArticlePipeline:
             segments = previous.get("transcribe")
             if segments is None:
                 segments = self._step("transcribe", lambda: self._transcribe(audio_path))
+            self._run_subtitle_step(previous.get("subtitle"), segments)
             outline = previous.get("outline")
             if outline is None:
                 outline = self._step(
@@ -613,6 +618,7 @@ class VideoArticlePipeline:
             ("download", self._load_video),
             ("audio", self._load_audio),
             ("transcribe", self._load_segments),
+            ("subtitle", self._load_subtitles),
             ("outline", self._load_outline),
             ("frames", self._load_frames),
             ("select_images", self._load_selected_images),
@@ -646,6 +652,18 @@ class VideoArticlePipeline:
         if not value:
             raise PipelineError("转写时间轴为空。")
         return value
+
+    def _load_subtitles(self) -> dict[str, Any]:
+        """复用已生成的字幕产物；模式不一致时由调用方决定重跑。"""
+        mode = subtitles_module.normalize_mode(self.task.get("subtitle_mode"))
+        if mode == "none":
+            # 没选字幕就没有产物，这是正常状态，不能当成「复用失败」。
+            return {"mode": "none"}
+        suffix = "bilingual" if mode == "bilingual" else "zh"
+        srt_path = self.task_dir / "transcript" / f"{suffix}.srt"
+        if not srt_path.is_file():
+            raise PipelineError("字幕产物缺失。")
+        return {"mode": mode, "srt": str(srt_path)}
 
     def _load_outline(self) -> dict[str, Any]:
         value = self._load_json_object("outline", "outline.json", "文章大纲")
@@ -1175,6 +1193,82 @@ class VideoArticlePipeline:
         self._record_transcribe_metrics(segments, time.monotonic() - transcribe_started, timing)
         return segments
 
+    def _run_subtitle_step(self, previous: Any, segments: list[dict[str, Any]]) -> Any:
+        """按任务级 subtitle_mode 决定跳过、复用还是生成字幕。"""
+        mode = subtitles_module.normalize_mode(self.task.get("subtitle_mode"))
+        if mode == "none":
+            self._skip_step(SUBTITLE_STEP, "未选择字幕")
+            return None
+        if isinstance(previous, dict) and previous.get("mode") == mode:
+            return previous
+        if not self._has_step(SUBTITLE_STEP):
+            # 老任务没有这个步骤位：直接执行，不写步骤状态。
+            return self._subtitle(segments, mode)
+        return self._step(SUBTITLE_STEP, lambda: self._subtitle(segments, mode))
+
+    def _translate_subtitles(self, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """逐块调用 LLM 翻译；块间带上文以保持术语一致。"""
+        counter = {"n": 0}
+
+        def call(messages: list[dict[str, str]]) -> dict[str, Any]:
+            counter["n"] += 1
+            return self._call_llm(
+                SUBTITLE_STEP,
+                messages,
+                response_name=f"subtitle-chunk-{counter['n']:03d}",
+                label=f"字幕第 {counter['n']} 块",
+            )
+
+        return subtitles_module.translate(
+            segments,
+            call,
+            log=lambda message: self.store.append_log(self.task_id, SUBTITLE_STEP, message),
+        )
+
+    def _subtitle(self, segments: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+        """翻译并写出 SRT / VTT。时间码只来自转写，模型只回填文本。"""
+        bilingual = mode == "bilingual"
+        if subtitles_module.is_chinese(segments):
+            # 中文素材再翻译一遍纯属浪费，模型还会顺手改写标点；直接沿用转写文本。
+            self.store.append_log(
+                self.task_id,
+                SUBTITLE_STEP,
+                "转写内容已是中文，跳过翻译，直接生成字幕（不做中英对照）。",
+            )
+            rows = subtitles_module.passthrough_rows(segments)
+            bilingual = False
+        else:
+            rows = self._translate_subtitles(segments)
+        suffix = "bilingual" if bilingual else "zh"
+
+        transcript_dir = self.task_dir / "transcript"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        srt_path = transcript_dir / f"{suffix}.srt"
+        vtt_path = transcript_dir / f"{suffix}.vtt"
+        subtitles_module.write_srt(rows, srt_path, bilingual=bilingual)
+        subtitles_module.write_vtt(rows, vtt_path, bilingual=bilingual)
+
+        artifacts = {
+            "subtitle_srt": srt_path.relative_to(self.task_dir).as_posix(),
+            "subtitle_vtt": vtt_path.relative_to(self.task_dir).as_posix(),
+        }
+        self.store.merge_artifacts(self.task_id, artifacts)
+        self._note_step(SUBTITLE_STEP, outputs=list(artifacts.values()))
+        missing = sum(1 for row in rows if not row.get("target"))
+        self.store.append_log(
+            self.task_id,
+            SUBTITLE_STEP,
+            f"字幕完成：{len(rows)} 段，模式 {mode}，缺译 {missing} 段（已保留原文）。",
+        )
+        return {"mode": mode, "srt": str(srt_path), "segments": len(rows), "missing": missing}
+
+    def run_subtitle_only(self, mode: str) -> Any:
+        """给已完成任务补字幕：只跑字幕步骤，不重跑转写或写稿。"""
+        self.store.update(self.task_id, subtitle_mode=mode)
+        self.task = self.store.get(self.task_id)
+        segments = self._load_segments()
+        return self._run_subtitle_step(None, segments)
+
     def _record_transcribe_metrics(
         self,
         segments: list[dict[str, Any]],
@@ -1300,7 +1394,7 @@ class VideoArticlePipeline:
         }
         request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         command = self.text_model.describe()
-        self.store.update_step(self.task_id, step, command=command)
+        self._note_step(step, command=command)
         self.store.append_log(self.task_id, step, command)
         request = urllib.request.Request(
             self._llm_endpoint(),

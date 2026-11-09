@@ -39,6 +39,7 @@ STEP_DEFINITIONS = (
     ("download", "下载并合并视频"),
     ("audio", "提取转写音频"),
     ("transcribe", "Whisper 带时间戳转写"),
+    ("subtitle", "生成中文字幕"),
     ("outline", "DeepSeek 生成文章大纲"),
     ("frames", "常规模式提取关键帧"),
     ("select_images", "按章节选择文章配图"),
@@ -69,6 +70,25 @@ def duration_ms(started_at: str | None, finished_at: str | None) -> int | None:
     except ValueError:
         return None
     return max(0, int((finished - started).total_seconds() * 1000))
+
+
+def _blank_step(key: str, label: str) -> dict[str, Any]:
+    """一个步骤位的初始状态。新建任务和补步骤位都从这里取，避免两处漂移。"""
+    return {
+        "key": key,
+        "label": label,
+        "status": "pending",
+        "started_at": None,
+        "finished_at": None,
+        "command": None,
+        "outputs": [],
+        "error": None,
+        "attempt_count": 0,
+        "attempts": [],
+        # 性能指标聚合：``{kind: [事件...], "updated_at": ...}``。
+        # 明细同时写进 metrics.jsonl，这里只保留 API/前端要用的摘要。
+        "metrics": {},
+    }
 
 
 class TaskStore:
@@ -102,13 +122,15 @@ class TaskStore:
             raise KeyError(task_id)
         return self.root / task_id
 
-    def create(self, url: str) -> dict[str, Any]:
+    def create(self, url: str, subtitle_mode: str = "none") -> dict[str, Any]:
         now = datetime.now().astimezone()
         task_id = f"{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
         task = {
             "schema_version": TASK_SCHEMA_VERSION,
             "id": task_id,
             "url": url,
+            # 任务级字幕选项：none / zh / bilingual。留空按 none 处理。
+            "subtitle_mode": subtitle_mode,
             "status": "queued",
             "created_at": now.isoformat(timespec="seconds"),
             "updated_at": now.isoformat(timespec="seconds"),
@@ -120,24 +142,7 @@ class TaskStore:
             "artifacts": {},
             "resume_count": 0,
             "resume_from": None,
-            "steps": [
-                {
-                    "key": key,
-                    "label": label,
-                    "status": "pending",
-                    "started_at": None,
-                    "finished_at": None,
-                    "command": None,
-                    "outputs": [],
-                    "error": None,
-                    "attempt_count": 0,
-                    "attempts": [],
-                    # 性能指标聚合：``{kind: [事件...], "updated_at": ...}``。
-                    # 明细同时写进 metrics.jsonl，这里只保留 API/前端要用的摘要。
-                    "metrics": {},
-                }
-                for key, label in self._step_layout()
-            ],
+            "steps": [_blank_step(key, label) for key, label in self._step_layout()],
         }
         with self._lock:
             task_dir = self.task_dir(task_id)
@@ -179,6 +184,25 @@ class TaskStore:
             task["artifacts"].update(artifacts)
             task["updated_at"] = utc_now()
             self._write(task)
+
+    def ensure_step(self, task_id: str, key: str, label: str, after: str) -> bool:
+        """给老任务补一个步骤位（插到 ``after`` 之后）。已存在则不动。
+
+        迁移前的任务没有字幕步骤；补字幕时要先把步骤位补上，页面才能看到进度。
+        """
+        with self._lock:
+            task = self.get(task_id)
+            if any(step["key"] == key for step in task["steps"]):
+                return False
+            position = len(task["steps"])
+            for index, step in enumerate(task["steps"]):
+                if step["key"] == after:
+                    position = index + 1
+                    break
+            task["steps"].insert(position, _blank_step(key, label))
+            task["updated_at"] = utc_now()
+            self._write(task)
+            return True
 
     def update_step(self, task_id: str, step_key: str, **changes: Any) -> None:
         with self._lock:

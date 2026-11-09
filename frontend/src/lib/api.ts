@@ -37,11 +37,27 @@ export function getResult(taskId: string): Promise<VideoResult> {
   return requestJson<VideoResult>(`/api/tasks/${taskId}/result`, { cache: "no-store" })
 }
 
-export function createTask(url: string): Promise<{ id: string; url: string }> {
+export type SubtitleMode = "none" | "zh" | "bilingual"
+
+export function createTask(
+  url: string,
+  subtitleMode: SubtitleMode = "none",
+): Promise<{ id: string; url: string }> {
   return requestJson<{ id: string; url: string }>("/api/tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, subtitle_mode: subtitleMode }),
+  })
+}
+
+export function addSubtitle(
+  taskId: string,
+  mode: Exclude<SubtitleMode, "none">,
+): Promise<{ id: string; mode: string }> {
+  return requestJson<{ id: string; mode: string }>(`/api/tasks/${taskId}/subtitle`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
   })
 }
 

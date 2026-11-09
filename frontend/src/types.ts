@@ -136,6 +136,8 @@ export interface VideoTask {
   metadata: TaskMetadata
   article_title?: string | null
   artifacts: Record<string, string>
+  /** 任务级字幕选项：none / zh / bilingual。老任务没有这个字段。 */
+  subtitle_mode?: string
   resume_count: number
   can_resume: boolean
   resume_from: ResumeStep | null
@@ -190,6 +192,9 @@ export interface VideoResult {
   metadata: TaskMetadata
   article_title?: string
   video: string
+  /** 字幕轨（VTT 相对路径）；没有生成字幕时为 null。 */
+  subtitle_vtt?: string | null
+  subtitle_srt?: string | null
   segments: TranscriptSegment[]
   outline: VideoOutline
   images: ArticleImage[]

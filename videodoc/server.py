@@ -20,9 +20,17 @@ from flask import (
 )
 
 from . import capabilities as capability_registry
+from . import subtitles as subtitles_module
 from . import settings as settings_module
 from .cancellation import CancellationRegistry, TaskCancellation
-from .pipeline import PipelineConfig, PipelineError, prepare_resume, run_pipeline
+from .pipeline import (
+    SUBTITLE_STEP,
+    PipelineConfig,
+    PipelineError,
+    VideoArticlePipeline,
+    prepare_resume,
+    run_pipeline,
+)
 from .task_store import TaskConfirmationError, TaskStateError, TaskStore
 
 
@@ -203,7 +211,8 @@ def create_app(config: dict | None = None) -> Flask:
         source_url = str(payload.get("url", "")).strip()
         if not valid_source_url(source_url):
             return jsonify({"error": "请输入有效的 http:// 或 https:// 视频链接。"}), 400
-        task = store.create(source_url)
+        subtitle_mode = subtitles_module.normalize_mode(payload.get("subtitle_mode"))
+        task = store.create(source_url, subtitle_mode=subtitle_mode)
         if app.config["START_BACKGROUND_TASKS"]:
             submit_pipeline(task["id"], cancellations.for_task(task["id"]))
         return jsonify({"id": task["id"], "url": f"/app/tasks/{task['id']}"}), 202
@@ -319,6 +328,50 @@ def create_app(config: dict | None = None) -> Flask:
             submit_pipeline(task_id, cancellations.reset(task_id), step_key)
         return jsonify({"id": task_id, "resume_from": step_key}), 202
 
+    @app.post("/api/tasks/<task_id>/subtitle")
+    def add_subtitle_api(task_id: str):
+        """给已完成任务补字幕。
+
+        刻意不走 ``queue_resume``：那里会校验「任务当前应从 X 继续」，已完成任务
+        必然被拒。这里只要求转写产物存在，然后单独跑字幕步骤。
+        """
+        payload = request.get_json(silent=True) or request.form
+        mode = subtitles_module.normalize_mode(payload.get("mode"))
+        if mode == "none":
+            return jsonify({"error": "请指定 mode：zh 或 bilingual。"}), 400
+        try:
+            store.get(task_id)
+        except KeyError:
+            return jsonify({"error": "任务不存在。"}), 404
+        segments_path = store.task_dir(task_id) / "transcript" / "segments.json"
+        if not segments_path.is_file():
+            return jsonify({"error": "该任务还没有转写结果，无法生成字幕。"}), 409
+
+        store.ensure_step(task_id, SUBTITLE_STEP, "生成中文字幕", after="transcribe")
+        store.update_step(
+            task_id,
+            SUBTITLE_STEP,
+            status="pending",
+            error=None,
+            started_at=None,
+            finished_at=None,
+            outputs=[],
+        )
+        cancellation = cancellations.reset(task_id)
+
+        def job() -> None:
+            try:
+                VideoArticlePipeline(
+                    store, task_id, pipeline_config, cancellation
+                ).run_subtitle_only(mode)
+            except Exception as error:  # 补字幕失败不应把任务整体标成失败
+                store.append_log(task_id, SUBTITLE_STEP, f"补字幕失败: {error}")
+            finally:
+                cancellations.discard(task_id)
+
+        executor.submit(job)
+        return jsonify({"id": task_id, "mode": mode}), 202
+
     @app.post("/api/tasks/<task_id>/cancel")
     def cancel_task_api(task_id: str):
         """终止等待中或运行中的任务。
@@ -386,11 +439,15 @@ def create_app(config: dict | None = None) -> Flask:
             'src="media/',
             f'src="/tasks/{task_id}/media/',
         )
+        # 字幕 VTT 走 media 路由；没有字幕时前端不挂 track。
+        artifacts = task.get("artifacts") or {}
+        result["subtitle_vtt"] = artifacts.get("subtitle_vtt")
+        result["subtitle_srt"] = artifacts.get("subtitle_srt")
         return jsonify(result)
 
     @app.get("/tasks/<task_id>/media/<path:filename>")
     def task_media(task_id: str, filename: str):
-        allowed_prefixes = ("video/", "analysis/keyframes/frames/")
+        allowed_prefixes = ("video/", "analysis/keyframes/frames/", "transcript/")
         if not filename.startswith(allowed_prefixes):
             abort(404)
         try:

@@ -1,4 +1,4 @@
-import { CircleStopIcon, MoreHorizontalIcon, Trash2Icon } from "lucide-react"
+import { CaptionsIcon, CircleStopIcon, LanguagesIcon, MoreHorizontalIcon, Trash2Icon } from "lucide-react"
 import { useState } from "react"
 
 import { CancelTaskDialog } from "@/components/cancel-task-dialog"
@@ -20,7 +20,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { deleteTask, getTaskDeletionPreview } from "@/lib/api"
+import { addSubtitle, deleteTask, getTaskDeletionPreview } from "@/lib/api"
 import { formatBytes, taskTitle, taskTitleShort } from "@/lib/format"
 import type { TaskDeletionPreview, VideoTask } from "@/types"
 
@@ -37,6 +37,7 @@ export function TaskActionsMenu({ task, onDeleted, onChanged }: TaskActionsMenuP
   const [preview, setPreview] = useState<TaskDeletionPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [subtitlePending, setSubtitlePending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // "queued" 只表示已提交线程池、还没轮到执行，此时删除不会丢产物，所以允许；
   // "running" 正在写产物，移走目录会让流水线写盘失败，继续拦（与后端
@@ -46,6 +47,24 @@ export function TaskActionsMenu({ task, onDeleted, onChanged }: TaskActionsMenuP
   const cancelable = task.status === "running" || task.status === "queued"
   // 已发出终止请求、但流水线还在收尾时，重复点击没有意义。
   const cancelRequested = Boolean(task.cancel_requested_at)
+  // 有转写才能出字幕；运行中的任务先不开放，避免和流水线抢同一个步骤位。
+  const canSubtitle =
+    Boolean(task.artifacts?.transcript_segments) &&
+    task.status !== "running" &&
+    task.status !== "queued"
+
+  const handleSubtitle = async (mode: "zh" | "bilingual") => {
+    setSubtitlePending(true)
+    setError(null)
+    try {
+      await addSubtitle(task.id, mode)
+      onChanged?.()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "补字幕失败")
+    } finally {
+      setSubtitlePending(false)
+    }
+  }
 
   const openDeleteDialog = async () => {
     setDeleteOpen(true)
@@ -96,7 +115,19 @@ export function TaskActionsMenu({ task, onDeleted, onChanged }: TaskActionsMenuP
         >
           <MoreHorizontalIcon />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuContent align="end" className="w-48">
+          {canSubtitle ? (
+            <>
+              <DropdownMenuItem disabled={subtitlePending} onClick={() => void handleSubtitle("zh")}>
+                <CaptionsIcon />
+                {subtitlePending ? "生成字幕中…" : "生成中文字幕"}
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={subtitlePending} onClick={() => void handleSubtitle("bilingual")}>
+                <LanguagesIcon />
+                生成中英字幕
+              </DropdownMenuItem>
+            </>
+          ) : null}
           <DropdownMenuItem
             disabled={!cancelable || cancelRequested}
             onClick={() => setCancelOpen(true)}
@@ -112,6 +143,7 @@ export function TaskActionsMenu({ task, onDeleted, onChanged }: TaskActionsMenuP
             <Trash2Icon />
             {deleteLabel}
           </DropdownMenuItem>
+          {error ? <p className="px-2 py-1 text-xs text-destructive">{error}</p> : null}
         </DropdownMenuContent>
       </DropdownMenu>
 

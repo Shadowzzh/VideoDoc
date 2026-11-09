@@ -38,6 +38,7 @@ interface FloatingVideoAssistantProps {
   expanded: boolean
   onToggleSize: () => void
   onHide: () => void
+  subtitleVtt?: string | null
 }
 
 export function FloatingVideoAssistant({
@@ -49,6 +50,7 @@ export function FloatingVideoAssistant({
   expanded,
   onToggleSize,
   onHide,
+  subtitleVtt,
 }: FloatingVideoAssistantProps) {
   const [viewport, setViewport] = useState(readViewportSize)
   const [floatingRect, setFloatingRect] = useState(() => readStoredRect(readViewportSize()))
@@ -134,7 +136,11 @@ export function FloatingVideoAssistant({
                 preload="metadata"
                 src={mediaHref(taskId, result.video)}
                 className="h-full w-full bg-black object-contain"
-              />
+              >
+                {subtitleVtt ? (
+                  <track kind="subtitles" srcLang="zh" label="中文" src={mediaHref(taskId, subtitleVtt)} default />
+                ) : null}
+              </video>
               <div className="absolute right-2 top-2 flex gap-1">
                 <Button type="button" variant="secondary" size="icon" aria-label={sizeLabel} onClick={onToggleSize}>
                   <SizeIcon />
