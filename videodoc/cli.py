@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def frontend_dist_dir() -> Path:
+    # 容器部署时前端产物不在包目录旁边（见 Dockerfile 的 VIDEODOC_FRONTEND_DIST），
+    # 这里必须先认环境变量，否则 ensure_frontend_built() 会按安装路径去找而直接退出。
+    override = os.environ.get("VIDEODOC_FRONTEND_DIST", "").strip()
+    if override:
+        return Path(override).expanduser()
+
     from .server import DEFAULT_FRONTEND_DIST
 
     return DEFAULT_FRONTEND_DIST

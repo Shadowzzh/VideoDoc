@@ -31,6 +31,11 @@ services:
       VIDEODOC_LLM_API_KEY: ${VIDEODOC_LLM_API_KEY:?请填 LLM API Key}
       # ---- 容器里没有浏览器可读 cookie，默认关闭 ----
       VIDEODOC_COOKIE_BROWSER: ${VIDEODOC_COOKIE_BROWSER:-}
+      # ---- 外部 whisper 服务（可选）----
+      # 留空则用进程内的 pywhispercpp；填 /usr/local/bin/whisper-remote 则走外部 HTTP 服务。
+      VIDEODOC_WHISPER_BIN: ${VIDEODOC_WHISPER_BIN:-}
+      WHISPER_REMOTE_URL: ${WHISPER_REMOTE_URL:-}
+      WHISPER_REMOTE_LANG: ${WHISPER_REMOTE_LANG:-auto}
     volumes:
       - videodoc-data:/data
 

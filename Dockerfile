@@ -61,6 +61,11 @@ COPY videodoc/ /app/videodoc/
 COPY pyproject.toml README.md LICENSE /app/
 COPY --from=frontend /src/frontend/dist /app/frontend/dist
 
+# 外部 whisper 客户端：设置 VIDEODOC_WHISPER_BIN 时替代进程内 pywhispercpp。
+# 不设该变量时本脚本不参与任何流程，镜像行为与之前完全一致。
+COPY deploy/whisper-remote.sh /usr/local/bin/whisper-remote
+RUN chmod +x /usr/local/bin/whisper-remote
+
 RUN mkdir -p /data && chmod 777 /data
 VOLUME ["/data"]
 EXPOSE 8765

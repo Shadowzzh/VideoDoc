@@ -33,7 +33,7 @@ videodoc = "videodoc.cli:main"
 
 [tool.setuptools]
 # 前端不在包内：它需要先在仓库根目录用 pnpm 构建，属于部署前置步骤。
-packages = ["videodoc", "videodoc.integrations"]
+packages = ["videodoc", "videodoc.capabilities", "videodoc.integrations"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
