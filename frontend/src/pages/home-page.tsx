@@ -23,7 +23,7 @@ const SUBTITLE_ITEMS = [
 ] as const
 
 export function HomePage() {
-  const { tasks, error, loading } = useTasks()
+  const { tasks, error, loading, refresh } = useTasks()
   const [url, setUrl] = useState("")
   const [subtitleMode, setSubtitleMode] = useState<SubtitleMode>("none")
   const [submitting, setSubmitting] = useState(false)
@@ -131,6 +131,7 @@ export function HomePage() {
                     <div className="absolute right-3 top-3">
                       <TaskActionsMenu
                         task={task}
+                        onChanged={refresh}
                         onDeleted={() => window.location.assign("/app/")}
                       />
                     </div>

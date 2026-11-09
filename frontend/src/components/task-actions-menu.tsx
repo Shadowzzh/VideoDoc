@@ -20,6 +20,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { toast } from "@/components/toast"
 import { addSubtitle, deleteTask, getTaskDeletionPreview } from "@/lib/api"
 import { formatBytes, taskTitle, taskTitleShort } from "@/lib/format"
 import type { TaskDeletionPreview, VideoTask } from "@/types"
@@ -58,9 +59,10 @@ export function TaskActionsMenu({ task, onDeleted, onChanged }: TaskActionsMenuP
     setError(null)
     try {
       await addSubtitle(task.id, mode)
+      toast(mode === "zh" ? "已提交：正在生成中文字幕" : "已提交：正在生成中英字幕")
       onChanged?.()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "补字幕失败")
+      toast(reason instanceof Error ? reason.message : "补字幕失败", "error")
     } finally {
       setSubtitlePending(false)
     }

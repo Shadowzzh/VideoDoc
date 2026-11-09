@@ -5,6 +5,7 @@ import { AppShell } from "@/components/app-shell"
 import { CancelTaskDialog } from "@/components/cancel-task-dialog"
 import { ErrorState } from "@/components/error-state"
 import { StatusBadge } from "@/components/status-badge"
+import { SubtitleMenuButton } from "@/components/subtitle-menu-button"
 import { TaskActionsMenu } from "@/components/task-actions-menu"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -85,6 +86,7 @@ export function TaskPage({ taskId }: { taskId: string }) {
                         {task.cancel_requested_at ? "正在终止…" : "终止任务"}
                       </Button>
                     ) : null}
+                    <SubtitleMenuButton task={task} onChanged={refresh} />
                     <TaskActionsMenu
                       task={task}
                       onDeleted={() => window.location.assign("/app/")}

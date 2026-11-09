@@ -17,6 +17,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type Ref
 import { AppShell } from "@/components/app-shell"
 import { ErrorState } from "@/components/error-state"
 import { FloatingVideoAssistant } from "@/components/floating-video-assistant"
+import { SubtitleMenuButton } from "@/components/subtitle-menu-button"
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -26,13 +27,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useMediaQuery } from "@/hooks/use-media-query"
 import { useResult } from "@/hooks/use-result"
+import { useTask } from "@/hooks/use-task"
 import { mediaHref, taskHref } from "@/lib/api"
 import { formatSeconds, resultTitle } from "@/lib/format"
 import { matchSectionAnchors, pickActiveSectionId } from "@/lib/outline-anchors"
-import type { OutlineSection, VideoResult } from "@/types"
+import type { OutlineSection, VideoResult, VideoTask } from "@/types"
 
 export function ResultPage({ taskId }: { taskId: string }) {
   const { result, error, loading } = useResult(taskId)
+  // 结果页也要能补字幕，所以额外拿一次任务（含 artifacts）。
+  const taskState = useTask(taskId)
   const desktop = useMediaQuery("(min-width: 1024px)")
   const [videoVisible, setVideoVisible] = useState(true)
   const [videoExpanded, setVideoExpanded] = useState(false)
@@ -307,6 +311,8 @@ export function ResultPage({ taskId }: { taskId: string }) {
         <ResultHeader
           taskId={taskId}
           result={result}
+          task={taskState.task}
+          onChanged={taskState.refresh}
           desktop={desktop}
           videoVisible={videoVisible}
           videoExpanded={videoExpanded}
@@ -360,6 +366,8 @@ export function ResultPage({ taskId }: { taskId: string }) {
 interface ResultHeaderProps {
   taskId: string
   result: VideoResult
+  task: VideoTask | null
+  onChanged?: () => void
   desktop: boolean
   videoVisible: boolean
   videoExpanded: boolean
@@ -372,6 +380,8 @@ interface ResultHeaderProps {
 function ResultHeader({
   taskId,
   result,
+  task,
+  onChanged,
   desktop,
   videoVisible,
   videoExpanded,
@@ -403,6 +413,7 @@ function ResultHeader({
         <h1 className="truncate text-lg font-semibold tracking-tight">{resultTitle(result)}</h1>
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {task ? <SubtitleMenuButton task={task} onChanged={onChanged} /> : null}
         <Button nativeButton={false} variant="outline" size="sm" render={<a href={taskHref(taskId)} />}>
           <ListChecksIcon />处理流程
         </Button>

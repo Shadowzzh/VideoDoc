@@ -21,7 +21,13 @@ export function useTask(taskId: string) {
         }
         setTask(value)
         setError(null)
-        if (value.status === "queued" || value.status === "running") {
+        // 补字幕这类后台动作不改任务状态，只看 status 会永远不刷新；
+        // 任何步骤处于 running 都要继续轮询。
+        const busy =
+          value.status === "queued" ||
+          value.status === "running" ||
+          value.steps.some((step) => step.status === "running")
+        if (busy) {
           timer = window.setTimeout(load, 1500)
         }
       } catch (reason) {

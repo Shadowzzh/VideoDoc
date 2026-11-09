@@ -7,6 +7,7 @@ export function useTasks(refreshMs = 5000) {
   const [tasks, setTasks] = useState<VideoTask[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshVersion, setRefreshVersion] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -38,7 +39,9 @@ export function useTasks(refreshMs = 5000) {
         window.clearTimeout(timer)
       }
     }
-  }, [refreshMs])
+  }, [refreshMs, refreshVersion])
 
-  return { tasks, error, loading }
+  const refresh = () => setRefreshVersion((value) => value + 1)
+
+  return { tasks, error, loading, refresh }
 }
