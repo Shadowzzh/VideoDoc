@@ -8,12 +8,19 @@ import { TaskActionsMenu } from "@/components/task-actions-menu"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
 import { createTask, primaryTaskHref, taskHref, type SubtitleMode } from "@/lib/api"
 import { formatDate, formatDurationMilliseconds, taskTitle } from "@/lib/format"
 import { taskTiming } from "@/lib/timing"
 import { useTasks } from "@/hooks/use-tasks"
+
+const SUBTITLE_ITEMS = [
+  { value: "none", label: "不加字幕" },
+  { value: "zh", label: "中文字幕" },
+  { value: "bilingual", label: "中英双语" },
+] as const
 
 export function HomePage() {
   const { tasks, error, loading } = useTasks()
@@ -64,16 +71,22 @@ export function HomePage() {
                     autoFocus
                   />
                 </div>
-                <select
+                <Select
                   value={subtitleMode}
-                  onChange={(event) => setSubtitleMode(event.target.value as SubtitleMode)}
-                  aria-label="字幕"
-                  className="h-9 shrink-0 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                  onValueChange={(value: string | null) => setSubtitleMode((value ?? "none") as SubtitleMode)}
+                  items={SUBTITLE_ITEMS}
                 >
-                  <option value="none">不加字幕</option>
-                  <option value="zh">中文字幕</option>
-                  <option value="bilingual">中英双语</option>
-                </select>
+                  <SelectTrigger aria-label="字幕" className="h-9 w-32 shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SUBTITLE_ITEMS.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Button type="submit" disabled={submitting || !url.trim()}>
                   {submitting ? "创建中…" : "开始处理"}<ArrowRightIcon />
                 </Button>

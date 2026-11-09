@@ -158,3 +158,27 @@ describe("TaskActionsMenu", () => {
     expect(busy.closest("[data-disabled]")).toBeInTheDocument()
   })
 })
+
+describe("TaskActionsMenu 字幕入口", () => {
+  it("有转写的已完成任务显示补字幕选项", async () => {
+    const withTranscript = {
+      ...task,
+      artifacts: { transcript_segments: "transcript/segments.json" },
+    } as VideoTask
+    render(<TaskActionsMenu task={withTranscript} onDeleted={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: /的操作菜单$/ }))
+
+    expect(await screen.findByText("生成中文字幕")).toBeTruthy()
+    expect(screen.getByText("生成中英字幕")).toBeTruthy()
+  })
+
+  it("没有转写的任务不显示补字幕选项", async () => {
+    render(<TaskActionsMenu task={{ ...task, artifacts: {} } as VideoTask} onDeleted={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole("button", { name: /的操作菜单$/ }))
+
+    await screen.findByText("终止任务")
+    expect(screen.queryByText("生成中文字幕")).toBeNull()
+  })
+})
