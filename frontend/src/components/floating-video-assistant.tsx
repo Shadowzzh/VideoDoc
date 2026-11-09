@@ -1,11 +1,13 @@
 import {
+  ExpandIcon,
   GripHorizontalIcon,
   Maximize2Icon,
   Minimize2Icon,
+  ShrinkIcon,
   VideoIcon,
   XIcon,
 } from "lucide-react"
-import { useEffect, useState, type RefObject } from "react"
+import { useEffect, useRef, useState, type RefObject } from "react"
 import { Rnd } from "react-rnd"
 
 import { Button } from "@/components/ui/button"
@@ -20,6 +22,7 @@ import {
   floatingVideoWidthLimits,
   decodeFloatingVideoRect,
   maximizedFloatingVideoRect,
+  type FloatingVideoMode,
   type FloatingVideoRect,
   type PersistedFloatingVideoRect,
   type ViewportSize,
@@ -34,9 +37,11 @@ interface FloatingVideoAssistantProps {
   result: VideoResult
   currentSection: OutlineSection | null
   videoRef: RefObject<HTMLVideoElement | null>
-  visible: boolean
-  expanded: boolean
+  /** 全屏元素挂在 floating-video-assistant 内部，由结果页触发浏览器全屏。 */
+  fullscreenElementRef: RefObject<HTMLElement | null>
+  mode: FloatingVideoMode
   onToggleSize: () => void
+  onToggleFullscreen: () => void
   onHide: () => void
   subtitleVtt?: string | null
 }
@@ -46,14 +51,29 @@ export function FloatingVideoAssistant({
   result,
   currentSection,
   videoRef,
-  visible,
-  expanded,
+  fullscreenElementRef,
+  mode,
   onToggleSize,
+  onToggleFullscreen,
   onHide,
   subtitleVtt,
 }: FloatingVideoAssistantProps) {
   const [viewport, setViewport] = useState(readViewportSize)
   const [floatingRect, setFloatingRect] = useState(() => readStoredRect(readViewportSize()))
+  const asideRef = useRef<HTMLElement | null>(null)
+
+  const visible = mode !== "hidden"
+  const fullscreen = mode === "fullscreen"
+  const expanded = mode === "maximized" || fullscreen
+
+  useEffect(() => {
+    fullscreenElementRef.current = asideRef.current
+    return () => {
+      if (fullscreenElementRef.current === asideRef.current) {
+        fullscreenElementRef.current = null
+      }
+    }
+  }, [fullscreenElementRef])
 
   useEffect(() => {
     const handleResize = () => {
@@ -75,17 +95,25 @@ export function FloatingVideoAssistant({
 
   const rect = expanded ? maximizedFloatingVideoRect(viewport) : floatingRect
   const limits = floatingVideoWidthLimits(viewport)
-  const resizeEnabled = visible && !expanded
+  const resizeEnabled = visible && mode === "normal"
   let sizeLabel = "放大视频"
   let SizeIcon = Maximize2Icon
-  if (expanded) {
+  let fullscreenLabel = "全屏视频"
+  let FullscreenIcon = ExpandIcon
+  if (mode === "maximized") {
     sizeLabel = "缩小视频"
     SizeIcon = Minimize2Icon
+  }
+  if (fullscreen) {
+    sizeLabel = "缩小视频"
+    SizeIcon = Minimize2Icon
+    fullscreenLabel = "退出全屏"
+    FullscreenIcon = ShrinkIcon
   }
 
   return (
     <div className="pointer-events-none fixed inset-0 z-40" aria-hidden={!visible}>
-      {visible && expanded ? (
+      {visible && mode === "maximized" ? (
         <button
           type="button"
           aria-label="缩小视频遮罩"
@@ -126,9 +154,18 @@ export function FloatingVideoAssistant({
           !visible && "invisible pointer-events-none opacity-0",
         )}
       >
-        <aside className="h-full w-full" aria-label="视频浮窗">
-          <Card className="h-full gap-0 overflow-hidden py-0 shadow-2xl ring-foreground/20">
-            <div className="relative h-[calc(100%-4.5rem)] bg-black">
+        <aside
+          ref={asideRef}
+          className={cn("h-full w-full bg-black", fullscreen && "flex flex-col")}
+          aria-label="视频浮窗"
+        >
+          <Card
+            className={cn(
+              "h-full gap-0 overflow-hidden py-0 shadow-2xl ring-foreground/20",
+              fullscreen && "rounded-none shadow-none ring-0",
+            )}
+          >
+            <div className={cn("relative bg-black", fullscreen ? "h-full" : "h-[calc(100%-4.5rem)]")}>
               <video
                 ref={videoRef}
                 tabIndex={0}
@@ -145,13 +182,19 @@ export function FloatingVideoAssistant({
                 <Button type="button" variant="secondary" size="icon" aria-label={sizeLabel} onClick={onToggleSize}>
                   <SizeIcon />
                 </Button>
+                <Button type="button" variant="secondary" size="icon" aria-label={fullscreenLabel} onClick={onToggleFullscreen}>
+                  <FullscreenIcon />
+                </Button>
                 <Button type="button" variant="secondary" size="icon" aria-label="隐藏视频" onClick={onHide}>
                   <XIcon />
                 </Button>
               </div>
             </div>
             <CardHeader
-              className="video-drag-handle h-[4.5rem] cursor-grab select-none gap-1 py-3 active:cursor-grabbing"
+              className={cn(
+                "video-drag-handle h-[4.5rem] shrink-0 cursor-grab select-none gap-1 py-3 active:cursor-grabbing",
+                fullscreen && "hidden",
+              )}
               title="拖动视频浮窗"
             >
               <div className="flex items-center justify-between gap-3">
@@ -165,6 +208,8 @@ export function FloatingVideoAssistant({
                   <span className="text-[10px] text-muted-foreground">播放</span>
                   <ShortcutKey>V</ShortcutKey>
                   <span className="text-[10px] text-muted-foreground">缩放</span>
+                  <ShortcutKey>F</ShortcutKey>
+                  <span className="text-[10px] text-muted-foreground">全屏</span>
                 </div>
               </div>
               <CardTitle className="truncate text-sm leading-5">{currentSection?.title || "等待播放"}</CardTitle>

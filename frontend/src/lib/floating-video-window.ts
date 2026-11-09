@@ -10,6 +10,70 @@ export interface ViewportSize {
   height: number
 }
 
+export type FloatingVideoMode = "hidden" | "normal" | "maximized" | "fullscreen"
+export type MaximizedOrigin = "hidden" | "normal"
+export type FullscreenOrigin = "normal" | "maximized"
+
+/**
+ * V 键和全屏按钮共享的状态。`maximizedFrom`/`fullscreenFrom` 记住放大前的来源，
+ * 这样从小窗进入最大化会回到小窗，从关闭状态进入最大化会直接关闭。
+ */
+export interface FloatingVideoModeState {
+  mode: FloatingVideoMode
+  maximizedFrom: MaximizedOrigin
+  fullscreenFrom: FullscreenOrigin
+}
+
+export const INITIAL_FLOATING_VIDEO_MODE_STATE: FloatingVideoModeState = {
+  mode: "normal",
+  maximizedFrom: "normal",
+  fullscreenFrom: "maximized",
+}
+
+export function toggleFloatingVideoSize(state: FloatingVideoModeState): FloatingVideoModeState {
+  switch (state.mode) {
+    case "hidden":
+      return { ...state, mode: "maximized", maximizedFrom: "hidden" }
+    case "normal":
+      return { ...state, mode: "maximized", maximizedFrom: "normal" }
+    case "maximized":
+      return { ...state, mode: state.maximizedFrom }
+    case "fullscreen":
+      // 全屏是最高的放大档，再按 V 收回到进入全屏前的档位。
+      return { ...state, mode: state.fullscreenFrom }
+  }
+}
+
+export function enterFloatingVideoFullscreen(state: FloatingVideoModeState): FloatingVideoModeState {
+  if (state.mode === "fullscreen") {
+    return state
+  }
+  return {
+    mode: "fullscreen",
+    maximizedFrom: state.maximizedFrom,
+    // 从关闭状态进入全屏时，退出全屏应停在最大化而不是重新关上。
+    fullscreenFrom: state.mode === "normal" ? "normal" : "maximized",
+  }
+}
+
+export function exitFloatingVideoFullscreen(state: FloatingVideoModeState): FloatingVideoModeState {
+  if (state.mode !== "fullscreen") {
+    return state
+  }
+  return { ...state, mode: state.fullscreenFrom }
+}
+
+export function hideFloatingVideo(state: FloatingVideoModeState): FloatingVideoModeState {
+  return { ...state, mode: "hidden" }
+}
+
+export function revealFloatingVideo(state: FloatingVideoModeState): FloatingVideoModeState {
+  if (state.mode !== "hidden") {
+    return state
+  }
+  return { ...state, mode: "normal" }
+}
+
 export interface PersistedFloatingVideoRect {
   x?: unknown
   y?: unknown

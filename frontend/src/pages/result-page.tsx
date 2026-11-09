@@ -145,6 +145,23 @@ export function ResultPage({ taskId }: { taskId: string }) {
     })
   }, [videoModeState])
 
+  // 显式「回到小窗」：按钮和 Esc 都用它。V 仍按「关闭 → 最大化 → 关闭」的循环走。
+  const showVideoSmall = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined)
+    }
+    setVideoModeState((state) => (state.mode === "normal" ? state : { ...state, mode: "normal" }))
+  }, [])
+
+  // 顶栏和浮窗上的放大/缩小按钮：小窗 ↔ 最大化，从最大化/全屏回小窗，从关闭显示为小窗。
+  const handleSizeButton = useCallback(() => {
+    if (videoModeState.mode === "normal") {
+      toggleVideoSize()
+      return
+    }
+    showVideoSmall()
+  }, [showVideoSmall, toggleVideoSize, videoModeState.mode])
+
   const hideVideo = useCallback(() => {
     videoRef.current?.pause()
     if (document.fullscreenElement) {
@@ -210,7 +227,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
       // 全屏时 Esc 由浏览器接管，不能再拦截，否则会和退出全屏冲突。
       if (event.key === "Escape" && !document.fullscreenElement) {
         event.preventDefault()
-        setVideoModeState((state) => (state.mode === "maximized" ? toggleFloatingVideoSize(state) : state))
+        setVideoModeState((state) => (state.mode === "maximized" ? { ...state, mode: "normal" } : state))
       }
     }
     window.addEventListener("keydown", handleKeyDown)
@@ -372,7 +389,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
           videoMode={videoModeState.mode}
           videoPlaying={videoPlaying}
           onTogglePlayback={togglePlayback}
-          onToggleVideoSize={toggleVideoSize}
+          onToggleVideoSize={handleSizeButton}
           onOpenMobileVideo={() => setMobileVideoOpen(true)}
         />
         <div className="min-h-0 flex-1">
@@ -394,7 +411,7 @@ export function ResultPage({ taskId }: { taskId: string }) {
             videoRef={videoRef}
             fullscreenElementRef={fullscreenElementRef}
             mode={videoModeState.mode}
-            onToggleSize={toggleVideoSize}
+            onToggleSize={handleSizeButton}
             onToggleFullscreen={toggleVideoFullscreen}
             onHide={hideVideo}
             subtitleVtt={result.subtitle_vtt}

@@ -2,12 +2,18 @@ import { describe, expect, it } from "vitest"
 
 import {
   FLOATING_VIDEO_MARGIN,
+  INITIAL_FLOATING_VIDEO_MODE_STATE,
   clampFloatingVideoRect,
   decodeFloatingVideoRect,
   defaultFloatingVideoRect,
+  enterFloatingVideoFullscreen,
+  exitFloatingVideoFullscreen,
   floatingVideoHeight,
   floatingVideoWidthLimits,
+  hideFloatingVideo,
   maximizedFloatingVideoRect,
+  revealFloatingVideo,
+  toggleFloatingVideoSize,
 } from "@/lib/floating-video-window"
 
 describe("floating video window geometry", () => {
@@ -53,5 +59,57 @@ describe("floating video window geometry", () => {
     expect(decodeFloatingVideoRect({ x: 1, y: 2, width: 3, height: 4 })).toEqual({ x: 1, y: 2, width: 3, height: 4 })
     expect(decodeFloatingVideoRect({ x: 1, y: 2, width: Number.NaN, height: 4 })).toBeNull()
     expect(decodeFloatingVideoRect({ x: 1, y: 2, width: "3", height: 4 })).toBeNull()
+  })
+})
+
+describe("floating video size cycle", () => {
+  it("cycles a visible window between normal and maximized", () => {
+    const maximized = toggleFloatingVideoSize(INITIAL_FLOATING_VIDEO_MODE_STATE)
+    expect(maximized).toMatchObject({ mode: "maximized", maximizedFrom: "normal" })
+
+    const restored = toggleFloatingVideoSize(maximized)
+    expect(restored.mode).toBe("normal")
+  })
+
+  it("opens a hidden window maximized and closes it on the next toggle", () => {
+    const hidden = hideFloatingVideo(INITIAL_FLOATING_VIDEO_MODE_STATE)
+    expect(hidden.mode).toBe("hidden")
+
+    const opened = toggleFloatingVideoSize(hidden)
+    expect(opened).toMatchObject({ mode: "maximized", maximizedFrom: "hidden" })
+
+    expect(toggleFloatingVideoSize(opened).mode).toBe("hidden")
+  })
+
+  it("returns a hidden window to normal when playback is revealed", () => {
+    const hidden = hideFloatingVideo(INITIAL_FLOATING_VIDEO_MODE_STATE)
+    expect(revealFloatingVideo(hidden).mode).toBe("normal")
+    expect(revealFloatingVideo(INITIAL_FLOATING_VIDEO_MODE_STATE).mode).toBe("normal")
+  })
+
+  it("remembers which mode to return to when leaving fullscreen", () => {
+    const fromNormal = enterFloatingVideoFullscreen(INITIAL_FLOATING_VIDEO_MODE_STATE)
+    expect(fromNormal).toMatchObject({ mode: "fullscreen", fullscreenFrom: "normal" })
+    expect(exitFloatingVideoFullscreen(fromNormal).mode).toBe("normal")
+
+    const maximized = toggleFloatingVideoSize(INITIAL_FLOATING_VIDEO_MODE_STATE)
+    const fromMaximized = enterFloatingVideoFullscreen(maximized)
+    expect(fromMaximized.fullscreenFrom).toBe("maximized")
+    expect(exitFloatingVideoFullscreen(fromMaximized).mode).toBe("maximized")
+  })
+
+  it("enters fullscreen from hidden without losing the hidden origin", () => {
+    const hidden = hideFloatingVideo(INITIAL_FLOATING_VIDEO_MODE_STATE)
+    const fullscreen = enterFloatingVideoFullscreen(hidden)
+
+    expect(fullscreen).toMatchObject({ mode: "fullscreen", fullscreenFrom: "maximized", maximizedFrom: "normal" })
+    expect(exitFloatingVideoFullscreen(fullscreen).mode).toBe("maximized")
+    expect(toggleFloatingVideoSize(fullscreen).mode).toBe("maximized")
+  })
+
+  it("ignores redundant fullscreen transitions", () => {
+    const fullscreen = enterFloatingVideoFullscreen(INITIAL_FLOATING_VIDEO_MODE_STATE)
+    expect(enterFloatingVideoFullscreen(fullscreen)).toBe(fullscreen)
+    expect(exitFloatingVideoFullscreen(INITIAL_FLOATING_VIDEO_MODE_STATE).mode).toBe("normal")
   })
 })
