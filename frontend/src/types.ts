@@ -48,6 +48,31 @@ export interface TaskStep {
   metrics?: StepMetrics
   /** 长命令的存活信号；只在该阶段是运行中且发过心跳时存在。 */
   heartbeat?: StepHeartbeat | null
+  /** 步骤内部的子阶段（配音、字幕这类多段动作）；老任务没有这个字段。 */
+  stages?: TaskStage[]
+}
+
+/** 子阶段里的单个条目，例如某一段 TTS。 */
+export interface TaskStageItem {
+  key: string
+  label: string
+  /** ``cached`` 表示这一段直接命中了磁盘缓存，没有重新合成。 */
+  status: StepStatus | "cached"
+  detail?: string | null
+  duration_ms?: number | null
+}
+
+/** 一个步骤内部的阶段，例如配音里的「写稿 / TTS / 对齐 / 分离 / 混音」。 */
+export interface TaskStage {
+  key: string
+  label: string
+  status: StepStatus
+  started_at: string | null
+  finished_at: string | null
+  detail?: string | null
+  duration_ms?: number | null
+  error?: string | null
+  items?: TaskStageItem[]
 }
 
 /** 单条外部命令的耗时。 */

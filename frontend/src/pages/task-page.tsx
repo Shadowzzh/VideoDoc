@@ -1,4 +1,4 @@
-import { ArrowRightIcon, ChevronRightIcon, CircleStopIcon, ClockIcon, ExternalLinkIcon, FileIcon, RotateCcwIcon, TerminalIcon, TimerIcon } from "lucide-react"
+import { ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, CircleStopIcon, ClockIcon, ExternalLinkIcon, FileIcon, RotateCcwIcon, TerminalIcon, TimerIcon } from "lucide-react"
 import { useState } from "react"
 
 import { AppShell } from "@/components/app-shell"
@@ -14,12 +14,13 @@ import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useNow } from "@/hooks/use-now"
 import { useTask } from "@/hooks/use-task"
 import { downloadHref, resultHref, resumeTask } from "@/lib/api"
 import { formatBytes, formatDate, formatDurationMilliseconds, formatPercent, taskTitle } from "@/lib/format"
 import { stepDurationMs, attemptDurationMs, taskTiming } from "@/lib/timing"
-import type { TaskStep, VideoTask } from "@/types"
+import type { TaskStage, TaskStageItem, TaskStep, VideoTask } from "@/types"
 
 export function TaskPage({ taskId }: { taskId: string }) {
   const { task, error, loading, refresh } = useTask(taskId)
@@ -63,11 +64,11 @@ export function TaskPage({ taskId }: { taskId: string }) {
               <header className="space-y-4">
                 <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
                   <div className="min-w-0 space-y-2">
-                    <div className="flex items-center gap-2"><StatusBadge status={task.status} /><span className="font-mono text-xs text-muted-foreground">{task.id}</span></div>
+                    <div className="flex items-center gap-2 whitespace-nowrap"><StatusBadge status={task.status} /><span className="font-mono text-xs text-muted-foreground">{task.id}</span></div>
                     <h1 className="line-clamp-3 [overflow-wrap:anywhere] text-2xl font-semibold tracking-tight md:text-3xl">{taskTitle(task)}</h1>
                     <a className="inline-flex max-w-full items-center gap-1 truncate text-sm text-muted-foreground hover:text-foreground" href={task.url} target="_blank" rel="noreferrer">{task.url}<ExternalLinkIcon className="size-3.5 shrink-0" /></a>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 md:justify-end">
                     {task.status === "completed" ? (
                       <Button nativeButton={false} render={<a href={resultHref(task.id)} />}>打开文章<ArrowRightIcon /></Button>
                     ) : null}
@@ -124,21 +125,40 @@ export function TaskPage({ taskId }: { taskId: string }) {
 
               <section className="space-y-3">
                 <div><h2 className="text-lg font-semibold">处理流水线</h2><p className="text-sm text-muted-foreground">点击步骤查看命令、产物和完整日志。</p></div>
-                <div className="space-y-2">
-                  {task.steps.map((step, index) => (
-                    <button key={step.key} type="button" onClick={() => setSelectedStepKey(step.key)} className="block w-full text-left">
-                      <Card className="gap-0 py-0 transition-colors hover:bg-accent/50">
-                        <CardContent className="flex items-center gap-4 px-4 py-4 md:px-5">
-                          <span className="flex size-8 shrink-0 items-center justify-center rounded-full border bg-background font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
-                          <div className="min-w-0 flex-1"><p className="font-medium">{step.label}</p><p className="mt-0.5 truncate text-xs text-muted-foreground">{step.error || step.command || "等待执行"}</p></div>
-                          <StepDuration step={step} now={now} />
-                          <StatusBadge status={step.status} />
-                          <ChevronRightIcon className="size-4 text-muted-foreground" />
-                        </CardContent>
-                      </Card>
-                    </button>
-                  ))}
-                </div>
+                <Tabs defaultValue="main">
+                  <TabsList>
+                    <TabsTrigger value="main">主流程</TabsTrigger>
+                    <TabsTrigger value="subtitle">字幕</TabsTrigger>
+                    <TabsTrigger value="dub">配音</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="main" className="pt-3">
+                    <StepList
+                      steps={task.steps.filter((step) => !EXTRA_STEP_KEYS.has(step.key))}
+                      offset={0}
+                      now={now}
+                      onSelect={setSelectedStepKey}
+                      empty="主流程还没有步骤。"
+                    />
+                  </TabsContent>
+                  <TabsContent value="subtitle" className="pt-3">
+                    <StepList
+                      steps={task.steps.filter((step) => step.key === "subtitle")}
+                      offset={task.steps.findIndex((step) => step.key === "subtitle")}
+                      now={now}
+                      onSelect={setSelectedStepKey}
+                      empty="这个任务没有生成字幕。"
+                    />
+                  </TabsContent>
+                  <TabsContent value="dub" className="pt-3">
+                    <StepList
+                      steps={task.steps.filter((step) => step.key === "dub")}
+                      offset={task.steps.findIndex((step) => step.key === "dub")}
+                      now={now}
+                      onSelect={setSelectedStepKey}
+                      empty="这个任务还没有生成配音。"
+                    />
+                  </TabsContent>
+                </Tabs>
               </section>
 
               {task.status === "completed" ? (
@@ -308,6 +328,118 @@ function TimingOverview({ task, now }: { task: VideoTask; now: number }) {
 }
 
 /** 运行中阶段用当前时间减开始时间，已结束阶段用后端算好的值。 */
+const EXTRA_STEP_KEYS = new Set(["subtitle", "dub"])
+
+const STAGE_DOT: Record<string, string> = {
+  pending: "bg-muted-foreground/30",
+  running: "animate-pulse bg-sky-500",
+  completed: "bg-emerald-500",
+  cached: "bg-emerald-500/50",
+  failed: "bg-destructive",
+  skipped: "bg-muted-foreground/30",
+}
+
+function stageDuration(stage: TaskStage, now: number): string {
+  if (stage.duration_ms != null) {
+    return formatDurationMilliseconds(stage.duration_ms)
+  }
+  if (stage.status === "running" && stage.started_at) {
+    const started = new Date(stage.started_at).getTime()
+    if (!Number.isNaN(started)) {
+      return formatDurationMilliseconds(now - started)
+    }
+  }
+  return ""
+}
+
+/** 处理流水线里的一个 tab：步骤卡片 + 步骤内部的子阶段。 */
+function StepList({
+  steps,
+  offset,
+  now,
+  onSelect,
+  empty,
+}: {
+  steps: TaskStep[]
+  offset: number
+  now: number
+  onSelect: (key: string) => void
+  empty: string
+}) {
+  if (!steps.length) {
+    return <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">{empty}</p>
+  }
+  return (
+    <div className="space-y-2">
+      {steps.map((step, index) => (
+        <div key={step.key} className="space-y-2">
+          <button type="button" onClick={() => onSelect(step.key)} className="block w-full text-left">
+            <Card className="gap-0 py-0 transition-colors hover:bg-accent/50">
+              <CardContent className="flex items-center gap-4 px-4 py-4 md:px-5">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-full border bg-background font-mono text-xs text-muted-foreground">{String(offset + index + 1).padStart(2, "0")}</span>
+                <div className="min-w-0 flex-1"><p className="font-medium">{step.label}</p><p className="mt-0.5 truncate text-xs text-muted-foreground">{step.error || step.command || "等待执行"}</p></div>
+                <StepDuration step={step} now={now} />
+                <StatusBadge status={step.status} />
+                <ChevronRightIcon className="size-4 text-muted-foreground" />
+              </CardContent>
+            </Card>
+          </button>
+          {step.stages?.length ? <StageList stages={step.stages} now={now} /> : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** 一个步骤内部的阶段（配音：准备字幕 → 写稿 → TTS → 对齐 → 分离 → 混音 → 成片）。 */
+function StageList({ stages, now }: { stages: TaskStage[]; now: number }) {
+  return (
+    <ol className="ml-4 space-y-1.5 border-l pl-4">
+      {stages.map((stage) => (
+        <li key={stage.key} className="relative">
+          <span className={`absolute -left-[1.32rem] top-2 size-2 rounded-full ${STAGE_DOT[stage.status] ?? "bg-muted"}`} />
+          <div className="rounded-lg border px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{stage.label}</span>
+              {stage.detail ? <span className="truncate text-xs text-muted-foreground">{stage.detail}</span> : null}
+              <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">{stageDuration(stage, now)}</span>
+              <StatusBadge status={stage.status} />
+            </div>
+            {stage.error ? <p className="mt-1 text-xs text-destructive [overflow-wrap:anywhere]">{stage.error}</p> : null}
+            {stage.items?.length ? <StageItems items={stage.items} /> : null}
+          </div>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+/** 阶段内部的细粒度条目（例如每一段 TTS），默认折起来。 */
+function StageItems({ items }: { items: TaskStageItem[] }) {
+  const [open, setOpen] = useState(false)
+  const settled = items.filter((item) => item.status === "completed" || item.status === "cached").length
+  return (
+    <div className="mt-2">
+      <button type="button" onClick={() => setOpen((value) => !value)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+        {open ? <ChevronDownIcon className="size-3" /> : <ChevronRightIcon className="size-3" />}
+        {items.length} 段 · {settled} 段完成
+      </button>
+      {open ? (
+        <ul className="mt-1.5 space-y-1">
+          {items.map((item) => (
+            <li key={item.key} className="flex items-center gap-2 rounded border px-2 py-1 text-xs">
+              <span className={`size-1.5 shrink-0 rounded-full ${STAGE_DOT[item.status] ?? "bg-muted"}`} />
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              {item.detail ? <span className="shrink-0 text-muted-foreground">{item.detail}</span> : null}
+              {item.duration_ms != null && item.duration_ms > 0 ? <span className="shrink-0 font-mono text-muted-foreground">{(item.duration_ms / 1000).toFixed(1)}s</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
 function StepDuration({ step, now }: { step: TaskStep; now: number }) {
   const value = stepDurationMs(step, now)
   if (value === null) {

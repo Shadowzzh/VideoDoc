@@ -93,6 +93,9 @@ def _blank_step(key: str, label: str) -> dict[str, Any]:
         # 性能指标聚合：``{kind: [事件...], "updated_at": ...}``。
         # 明细同时写进 metrics.jsonl，这里只保留 API/前端要用的摘要。
         "metrics": {},
+        # 步骤内部的子阶段（配音、字幕这类多段动作）：按 ``key`` 顺序展示，
+        # 每项可带 ``items`` 记录更细的单元（例如每一段 TTS）。
+        "stages": [],
     }
 
 
@@ -466,6 +469,93 @@ class TaskStore:
             if isinstance(derived, dict):
                 derived.update(payload)
             metrics["updated_at"] = utc_now()
+            self._write(task)
+
+    def update_stage(
+        self,
+        task_id: str,
+        step_key: str,
+        stage_key: str,
+        *,
+        label: str | None = None,
+        items: list[dict[str, Any]] | None = None,
+        **changes: Any,
+    ) -> None:
+        """在某个步骤下维护一个子阶段（不存在则创建）。
+
+        配音、字幕这类「一个步骤里有很多段动作」的能力，只靠日志和总耗时看不出来
+        卡在哪一段。子阶段把「准备字幕 / 写稿 / TTS / 对齐 / 分离 / 混音」拆开，
+        ``items`` 再往下拆到每一段（例如 16 段 TTS 各自的状态与耗时）。
+
+        按 ``stage_key`` 就地更新，不重建列表，避免前端轮询时顺序跳动。
+        """
+        now = utc_now()
+        with self._lock:
+            task = self.get(task_id)
+            step = next((item for item in task["steps"] if item["key"] == step_key), None)
+            if step is None:
+                return
+            stages = step.setdefault("stages", [])
+            stage = next((item for item in stages if item.get("key") == stage_key), None)
+            if stage is None:
+                stage = {
+                    "key": stage_key,
+                    "label": label or stage_key,
+                    "status": "pending",
+                    "started_at": None,
+                    "finished_at": None,
+                    "detail": None,
+                    "items": [],
+                }
+                stages.append(stage)
+            elif label:
+                stage["label"] = label
+            if items is not None:
+                stage["items"] = items
+            for key, value in changes.items():
+                stage[key] = value
+            stage.setdefault("updated_at", now)
+            stage["updated_at"] = now
+            task["updated_at"] = now
+            self._write(task)
+
+    def update_stage_item(
+        self,
+        task_id: str,
+        step_key: str,
+        stage_key: str,
+        item_key: str,
+        **changes: Any,
+    ) -> None:
+        """维护子阶段下的单个条目（例如某一段 TTS）。"""
+        now = utc_now()
+        with self._lock:
+            task = self.get(task_id)
+            step = next((item for item in task["steps"] if item["key"] == step_key), None)
+            if step is None:
+                return
+            stages = step.setdefault("stages", [])
+            stage = next((item for item in stages if item.get("key") == stage_key), None)
+            if stage is None:
+                stage = {
+                    "key": stage_key,
+                    "label": stage_key,
+                    "status": "running",
+                    "started_at": now,
+                    "finished_at": None,
+                    "detail": None,
+                    "items": [],
+                }
+                stages.append(stage)
+            items = stage.setdefault("items", [])
+            item = next((entry for entry in items if entry.get("key") == item_key), None)
+            if item is None:
+                item = {"key": item_key, "label": item_key, "status": "pending"}
+                items.append(item)
+            for key, value in changes.items():
+                item[key] = value
+            item["updated_at"] = now
+            task["updated_at"] = now
             self._write(task)
 
     def append_metric(self, task_id: str, event: dict[str, Any]) -> None:

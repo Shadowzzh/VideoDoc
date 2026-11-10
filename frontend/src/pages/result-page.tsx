@@ -483,12 +483,12 @@ function ResultHeader({
     playbackLabel = "暂停"
   }
   return (
-    <header className="flex shrink-0 items-center justify-between gap-4 border-b bg-background px-4 py-3 md:px-6">
+    <header className="flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 md:flex-row md:items-center md:justify-between md:gap-4 md:px-6">
       <div className="min-w-0">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground"><span>已完成任务</span><ChevronRightIcon className="size-3" /><span>文章</span></div>
+        <div className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground"><span>已完成任务</span><ChevronRightIcon className="size-3" /><span>文章</span></div>
         <h1 className="truncate text-lg font-semibold tracking-tight">{resultTitle(result)}</h1>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 flex-wrap items-center gap-1">
         {task ? <SubtitleMenuButton task={task} onChanged={onChanged} /> : null}
         {task ? <DubButton task={task} onChanged={onChanged} /> : null}
         <Button nativeButton={false} variant="outline" size="sm" render={<a href={taskHref(taskId)} />}>

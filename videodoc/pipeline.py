@@ -17,9 +17,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 import markdown
@@ -1353,6 +1354,37 @@ class VideoArticlePipeline:
         )
         return rows
 
+    def _dub_stage(self, key: str, label: str) -> Any:
+        """配音子阶段：进入标 running，退出标 done / failed 并记耗时。
+
+        配音只占流水线里的一个步骤位，但内部有七八段动作。只写日志的话，
+        前端只能看到「37 秒已完成」，看不出是卡在写稿、TTS 还是分离。
+        """
+
+        @contextmanager
+        def scope() -> Iterator[None]:
+            self.store.update_stage(
+                self.task_id, DUB_STEP, key,
+                label=label, status="running", started_at=utc_now(), error=None,
+            )
+            started = time.monotonic()
+            try:
+                yield
+            except Exception as exc:
+                self.store.update_stage(
+                    self.task_id, DUB_STEP, key,
+                    status="failed", finished_at=utc_now(), error=str(exc),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+                raise
+            self.store.update_stage(
+                self.task_id, DUB_STEP, key,
+                status="completed", finished_at=utc_now(),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+
+        return scope()
+
     def _dub(self) -> dict[str, Any]:
         """生成配音：合并短段 → 写稿 → 合成 → 对齐 → 分离 → 混音 → 成片。"""
         from . import dub as dub_module
@@ -1364,35 +1396,44 @@ class VideoArticlePipeline:
 
         config = config_from(settings_module.effective_settings())
 
-        rows = self._load_subtitle_rows()
-        if not rows:
-            log("没有现成中文字幕，先翻译一份。")
-            rows = self._translate_subtitles(self._load_segments())
-            if rows:
-                # 落盘，后面烧字幕和回看都要用；顺便登记成字幕产物。
-                transcript_dir = self.task_dir / "transcript"
-                transcript_dir.mkdir(parents=True, exist_ok=True)
-                subtitles_module.write_srt(rows, transcript_dir / "zh.srt")
-                subtitles_module.write_vtt(rows, transcript_dir / "zh.vtt")
-                self.store.merge_artifacts(self.task_id, {
-                    "subtitle_zh_srt": "transcript/zh.srt",
-                    "subtitle_zh_vtt": "transcript/zh.vtt",
-                    "subtitle_srt": "transcript/zh.srt",
-                    "subtitle_vtt": "transcript/zh.vtt",
-                })
-        if not rows:
-            raise PipelineError("没有可配音的字幕内容。")
+        with self._dub_stage("prepare", "准备字幕"):
+            rows = self._load_subtitle_rows()
+            if not rows:
+                log("没有现成中文字幕，先翻译一份。")
+                rows = self._translate_subtitles(self._load_segments())
+                if rows:
+                    # 落盘，后面烧字幕和回看都要用；顺便登记成字幕产物。
+                    transcript_dir = self.task_dir / "transcript"
+                    transcript_dir.mkdir(parents=True, exist_ok=True)
+                    subtitles_module.write_srt(rows, transcript_dir / "zh.srt")
+                    subtitles_module.write_vtt(rows, transcript_dir / "zh.vtt")
+                    self.store.merge_artifacts(self.task_id, {
+                        "subtitle_zh_srt": "transcript/zh.srt",
+                        "subtitle_zh_vtt": "transcript/zh.vtt",
+                        "subtitle_srt": "transcript/zh.srt",
+                        "subtitle_vtt": "transcript/zh.vtt",
+                    })
+            if not rows:
+                raise PipelineError("没有可配音的字幕内容。")
+            self.store.update_stage(
+                self.task_id, DUB_STEP, "prepare", detail=f"{len(rows)} 段字幕")
 
-        units = align.merge_short([
-            {"id": row["id"], "start": row["start_sec"], "end": row["end_sec"],
-             "target": row.get("target") or row.get("source") or ""}
-            for row in rows
-        ])
-        log(f"配音单元 {len(units)} 个（原字幕 {len(rows)} 段）。")
+        with self._dub_stage("units", "合并配音单元"):
+            units = align.merge_short([
+                {"id": row["id"], "start": row["start_sec"], "end": row["end_sec"],
+                 "target": row.get("target") or row.get("source") or ""}
+                for row in rows
+            ])
+            log(f"配音单元 {len(units)} 个（原字幕 {len(rows)} 段）。")
+            self.store.update_stage(
+                self.task_id, DUB_STEP, "units", detail=f"{len(units)} 个单元")
 
-        scripts = self._write_dub_script(units, config.tone)
-        dub_dir = self.task_dir / "dub"
-        dub_dir.mkdir(parents=True, exist_ok=True)
+        with self._dub_stage("script", "LLM 写配音稿"):
+            scripts = self._write_dub_script(units, config.tone)
+            dub_dir = self.task_dir / "dub"
+            dub_dir.mkdir(parents=True, exist_ok=True)
+            self.store.update_stage(
+                self.task_id, DUB_STEP, "script", detail=f"{len(scripts)} 段稿件")
 
         backend = tts.MingTTS(config.base_url, config.voice_id)
         manifest = runner.DubManifest(
@@ -1400,16 +1441,39 @@ class VideoArticlePipeline:
             voice=config.voice_id,
             extra=f"tone{config.tone}",
         )
-        durations = runner.synthesize_all(
-            scripts, backend, manifest, dub_dir / "wav",
-            on_progress=lambda done, total, message: log(f"{message}"),
-        )
-        log(f"合成完成 {len(durations)}/{len(scripts)} 段。")
 
-        plans = align.plan(scripts, durations, config.max_tempo)
-        stats = align.summarize(plans)
-        log(f"对齐：原速 {stats['exact']}、压缩 {stats['compressed']}、"
-            f"吃间隙 {stats['shifted']}、溢出 {stats['overflow']}。")
+        def tts_item(
+            unit: dict[str, Any], status: str, detail: str | None, ms: int | None
+        ) -> None:
+            """把每一段 TTS 的状态写进 tts 阶段的 items。"""
+            text = str(unit.get("script") or "")
+            label = text[:20] + ("…" if len(text) > 20 else "")
+            self.store.update_stage_item(
+                self.task_id, DUB_STEP, "tts", str(unit["id"]),
+                label=f"{unit['id']} · {label}" if label else str(unit["id"]),
+                status=status, detail=detail, duration_ms=ms,
+            )
+
+        with self._dub_stage("tts", "TTS 合成"):
+            durations = runner.synthesize_all(
+                scripts, backend, manifest, dub_dir / "wav",
+                on_progress=lambda done, total, message: log(f"{message}"),
+                on_item=tts_item,
+            )
+            log(f"合成完成 {len(durations)}/{len(scripts)} 段。")
+            self.store.update_stage(
+                self.task_id, DUB_STEP, "tts",
+                detail=f"{len(durations)}/{len(scripts)} 段")
+
+        with self._dub_stage("align", "时长对齐"):
+            plans = align.plan(scripts, durations, config.max_tempo)
+            stats = align.summarize(plans)
+            log(f"对齐：原速 {stats['exact']}、压缩 {stats['compressed']}、"
+                f"吃间隙 {stats['shifted']}、溢出 {stats['overflow']}。")
+            self.store.update_stage(
+                self.task_id, DUB_STEP, "align",
+                detail=f"原速 {stats['exact']} / 压缩 {stats['compressed']} / "
+                       f"吃间隙 {stats['shifted']} / 溢出 {stats['overflow']}")
 
         overflow = [plan for plan in plans if plan["overflow"]]
         if overflow:
@@ -1438,26 +1502,46 @@ class VideoArticlePipeline:
 
         audio_path = self.task_dir / "audio" / "transcript.wav"
         background = audio_path
-        if config.separate:
-            separator = self._pick_separator(config, log)
-            try:
-                _, background = separator.split(audio_path, dub_dir)
-                log(f"已分离人声与背景音乐（{separator.name}）。")
-            except separate.SeparationError as error:
-                log(f"人声分离失败，直接用原音轨：{error}")
+        if not config.separate:
+            self.store.update_stage(
+                self.task_id, DUB_STEP, "separate", label="人声分离",
+                status="skipped", started_at=utc_now(), finished_at=utc_now(),
+                detail="未启用")
+        else:
+            with self._dub_stage("separate", "人声分离"):
+                separator = self._pick_separator(config, log)
+                try:
+                    _, background = separator.split(audio_path, dub_dir)
+                    log(f"已分离人声与背景音乐（{separator.name}）。")
+                    self.store.update_stage(
+                        self.task_id, DUB_STEP, "separate", detail=separator.name)
+                except separate.SeparationError as error:
+                    log(f"人声分离失败，直接用原音轨：{error}")
+                    self.store.update_stage(
+                        self.task_id, DUB_STEP, "separate",
+                        detail="失败，使用原音轨")
 
-        dub_wav = render.mix_dub_track(plans, dub_dir / "wav", dub_dir / "dub.wav")
-        mixed = render.overlay_background(
-            dub_wav, background, dub_dir / "mixed.wav", gain=config.background_gain)
+        with self._dub_stage("mix", "混音"):
+            dub_wav = render.mix_dub_track(plans, dub_dir / "wav", dub_dir / "dub.wav")
+            mixed = render.overlay_background(
+                dub_wav, background, dub_dir / "mixed.wav", gain=config.background_gain)
+            self.store.update_stage(
+                self.task_id, DUB_STEP, "mix",
+                detail=f"配音 {len(plans)} 段 · BGM 音量 {config.background_gain}")
 
         video_path = self.task_dir / "video" / "source.mp4"
         srt_path = self.task_dir / "transcript" / "zh.srt"
         dubbed = self.task_dir / "video" / "dubbed.mp4"
-        if srt_path.is_file():
-            render.burn_subtitles(video_path, srt_path, dubbed,
-                                  bar=config.subtitle_bar)
-        else:
-            render.compose(video_path, mixed, dubbed)
+        with self._dub_stage("burn", "烧字幕 / 成片"):
+            burned = srt_path.is_file()
+            if burned:
+                render.burn_subtitles(video_path, srt_path, dubbed,
+                                      bar=config.subtitle_bar)
+            else:
+                render.compose(video_path, mixed, dubbed)
+            self.store.update_stage(
+                self.task_id, DUB_STEP, "burn",
+                detail="已烧入中文字幕" if burned else "无字幕，仅合成音轨")
 
         artifacts = {
             "dub_script": "dub/script.json",

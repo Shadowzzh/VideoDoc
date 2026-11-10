@@ -116,11 +116,17 @@ def synthesize_all(
     *,
     batch_size: int = BATCH_SIZE,
     on_progress: Callable[[int, int, str], None] | None = None,
+    on_item: Callable[[dict[str, Any], str, str | None, int | None], None] | None = None,
 ) -> dict[str, float]:
     """把所有单元合成一遍，跳过缓存命中的。
 
     ``units`` 每项需要 ``id`` 和 ``script``。返回 ``{id: 实际时长}``；失败的单元
     不出现在结果里，由调用方按 overflow 处理。
+
+    ``on_item(unit, status, detail, ms)`` 是逐段回调：状态取值 ``running`` /
+    ``completed`` / ``cached`` / ``failed``，``detail`` 是给前端直接展示的一句话
+    （例如 ``3.2s 音频``），``ms`` 是这一段花掉的墙钟时间。长视频有几十段，
+    只看「已合成 12/16」看不出哪一段卡住、哪一段走了缓存。
     """
     wav_dir.mkdir(parents=True, exist_ok=True)
     durations: dict[str, float] = {}
@@ -132,6 +138,8 @@ def synthesize_all(
         hit = manifest.cached(key, text)
         if hit is not None:
             durations[key] = hit
+            if on_item:
+                on_item(unit, "cached", f"缓存 {hit:.1f}s", 0)
         else:
             todo.append(unit)
 
@@ -146,8 +154,12 @@ def synthesize_all(
             text = str(unit.get("script") or "")
             try:
                 jobs.append((unit, tts.submit(text)))
+                if on_item:
+                    on_item(unit, "running", "已提交", None)
             except TTSError as exc:
                 manifest.set_failed(key, str(exc), 1)
+                if on_item:
+                    on_item(unit, "failed", str(exc), None)
                 if on_progress:
                     on_progress(len(durations), total, f"{key} 提交失败")
 
@@ -156,16 +168,26 @@ def synthesize_all(
             text = str(unit.get("script") or "")
             out = wav_dir / f"{key}.wav"
             last_error = ""
+            started = time.monotonic()
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
                     duration = tts.fetch(job_id, out)
                     manifest.set_done(key, text, duration, out)
                     durations[key] = duration
+                    if on_item:
+                        on_item(
+                            unit,
+                            "done",
+                            f"{duration:.1f}s 音频",
+                            int((time.monotonic() - started) * 1000),
+                        )
                     break
                 except TTSError as exc:
                     last_error = str(exc)
                     if not exc.retryable or attempt == MAX_ATTEMPTS:
                         manifest.set_failed(key, last_error, attempt)
+                        if on_item:
+                            on_item(unit, "failed", last_error, int((time.monotonic() - started) * 1000))
                         break
                     # 重新提交一次再等（原 job 可能已失效）
                     try:
