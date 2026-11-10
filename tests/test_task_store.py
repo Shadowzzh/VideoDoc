@@ -23,7 +23,7 @@ def test_task_store_persists_steps_and_logs(tmp_path):
     assert public["steps"][0]["outputs"] == ["metadata.json"]
     assert public["steps"][0]["log_tail"] == "metadata ready"
     # 进度只统计主流程步骤：subtitle 是事后动作，计入会让补字幕时百分比倒退。
-    counted = [step for step in public["steps"] if step["key"] != "subtitle"]
+    counted = [step for step in public["steps"] if step["key"] not in {"subtitle", "dub"}]
     assert public["progress"]["total"] == len(counted)
     assert public["progress"]["percent"] == round(1 / len(counted) * 100)
 

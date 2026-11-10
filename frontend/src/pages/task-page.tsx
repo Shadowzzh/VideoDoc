@@ -5,6 +5,7 @@ import { AppShell } from "@/components/app-shell"
 import { CancelTaskDialog } from "@/components/cancel-task-dialog"
 import { ErrorState } from "@/components/error-state"
 import { StatusBadge } from "@/components/status-badge"
+import { DubButton } from "@/components/dub-button"
 import { SubtitleMenuButton } from "@/components/subtitle-menu-button"
 import { TaskActionsMenu } from "@/components/task-actions-menu"
 import { Button } from "@/components/ui/button"
@@ -87,6 +88,7 @@ export function TaskPage({ taskId }: { taskId: string }) {
                       </Button>
                     ) : null}
                     <SubtitleMenuButton task={task} onChanged={refresh} />
+                    <DubButton task={task} onChanged={refresh} />
                     <TaskActionsMenu
                       task={task}
                       onDeleted={() => window.location.assign("/app/")}

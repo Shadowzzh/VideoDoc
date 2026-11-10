@@ -17,6 +17,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEv
 import { AppShell } from "@/components/app-shell"
 import { ErrorState } from "@/components/error-state"
 import { FloatingVideoAssistant } from "@/components/floating-video-assistant"
+import { DubButton } from "@/components/dub-button"
 import { SubtitleMenuButton } from "@/components/subtitle-menu-button"
 import { SubtitleTracks } from "@/components/subtitle-tracks"
 import { Button } from "@/components/ui/button"
@@ -489,6 +490,7 @@ function ResultHeader({
       </div>
       <div className="flex shrink-0 items-center gap-1">
         {task ? <SubtitleMenuButton task={task} onChanged={onChanged} /> : null}
+        {task ? <DubButton task={task} onChanged={onChanged} /> : null}
         <Button nativeButton={false} variant="outline" size="sm" render={<a href={taskHref(taskId)} />}>
           <ListChecksIcon />处理流程
         </Button>

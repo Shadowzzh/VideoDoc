@@ -18,7 +18,7 @@ def _section(settings):
 def test_default_settings_are_grouped_by_capability():
     defaults = st.default_settings()
 
-    assert list(defaults["capabilities"]) == [CAPABILITY, "text_model"]
+    assert list(defaults["capabilities"]) == [CAPABILITY, "text_model", "dub"]
     vision = defaults["capabilities"][CAPABILITY]
     assert vision["engine"] == "auto"
     assert vision["local"]["enabled"] is True
@@ -295,7 +295,7 @@ def test_redact_settings_exposes_schema_for_settings_page(tmp_path):
     view = st.redact_settings(st.effective_settings(tmp_path / "missing.json"))
 
     categories = view["categories"]
-    assert [category["key"] for category in categories] == [CAPABILITY, "text_model"]
+    assert [category["key"] for category in categories] == [CAPABILITY, "text_model", "dub"]
     assert categories[0]["label"] == "图像识别"
     assert categories[1]["label"] == "文本模型"
     assert [group["title"] for group in categories[0]["groups"]] == [

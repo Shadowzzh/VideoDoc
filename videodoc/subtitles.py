@@ -210,3 +210,46 @@ def write_vtt(rows: list[dict[str, Any]], path, *, bilingual: bool = False) -> N
 
 def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-") or "subtitle"
+
+
+def parse_timestamp(value: str) -> float:
+    """把 ``00:01:02,345`` 解析成秒。"""
+    match = re.match(r"(\d+):(\d+):(\d+)[,.](\d+)", value.strip())
+    if not match:
+        return 0.0
+    hours, minutes, seconds, millis = (int(part) for part in match.groups())
+    return hours * 3600 + minutes * 60 + seconds + millis / 1000
+
+
+def read_srt(path) -> list[dict[str, Any]]:
+    """读回 SRT，返回 ``[{id, start_sec, end_sec, source, target}]``。
+
+    双语字幕的块里第一行是原文、第二行是译文；单语块把整段当作 ``target``。
+    """
+    if not path or not path.is_file():
+        return []
+    raw = path.read_text(encoding="utf-8").strip()
+    rows: list[dict[str, Any]] = []
+    for block in re.split(r"\n\s*\n", raw):
+        lines = [line for line in block.strip().split("\n") if line.strip()]
+        if len(lines) < 2:
+            continue
+        index = 0
+        if lines[0].strip().isdigit():
+            index = 1
+        if index >= len(lines) or "-->" not in lines[index]:
+            continue
+        start_raw, end_raw = lines[index].split("-->")
+        body = [line.strip() for line in lines[index + 1:] if line.strip()]
+        if not body:
+            continue
+        source = body[0]
+        target = body[1] if len(body) > 1 else body[0]
+        rows.append({
+            "id": f"seg-{len(rows) + 1:05d}",
+            "start_sec": parse_timestamp(start_raw),
+            "end_sec": parse_timestamp(end_raw),
+            "source": source,
+            "target": target,
+        })
+    return rows

@@ -35,7 +35,7 @@ METRICS_FILENAME = "metrics.jsonl"
 # 核心流水线步骤。可插拔能力声明的步骤由 TaskStore 按 ``after`` 锚点插到对应位置：
 # 这里没有图像识别，因此**移除该能力后核心流水线照样跑完**。
 # 这些步骤不参与任务进度百分比：补字幕是事后动作，计入会让百分比倒退。
-PROGRESS_EXCLUDED_STEPS = {"subtitle"}
+PROGRESS_EXCLUDED_STEPS = {"subtitle", "dub"}
 
 
 STEP_DEFINITIONS = (
@@ -44,6 +44,7 @@ STEP_DEFINITIONS = (
     ("audio", "提取转写音频"),
     ("transcribe", "Whisper 带时间戳转写"),
     ("subtitle", "生成中文字幕"),
+    ("dub", "生成中文配音"),
     ("outline", "DeepSeek 生成文章大纲"),
     ("frames", "常规模式提取关键帧"),
     ("select_images", "按章节选择文章配图"),

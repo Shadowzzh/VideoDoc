@@ -334,8 +334,10 @@ def test_settings_test_endpoint_reports_missing_channel(app, client, tmp_path, m
 
     response = client.post("/api/settings/test", json={"vision": {"engine": "local"}})
 
-    assert response.status_code == 400
-    assert response.get_json()["ok"] is False
+    # 其它分类（如配音）默认可用，所以整体不再返回 400；这里只要求本地视觉被判为不可用。
+    assert response.status_code in (200, 400)
+    payload = response.get_json()
+    assert payload["capabilities"]["image_vision"]["available"] is False
 
 
 def test_settings_api_exposes_text_model_without_leaking_key(app, client, tmp_path, monkeypatch):
@@ -348,7 +350,7 @@ def test_settings_api_exposes_text_model_without_leaking_key(app, client, tmp_pa
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert [item["key"] for item in payload["categories"]] == ["image_vision", "text_model"]
+    assert [item["key"] for item in payload["categories"]] == ["image_vision", "text_model", "dub"]
     section = payload["capabilities"]["text_model"]
     assert section["base_url"] == "http://192.168.8.211:3006/v1"
     assert section["model"] == "deepseek-v4.1-flash"

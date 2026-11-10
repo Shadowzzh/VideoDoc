@@ -61,6 +61,12 @@ export function addSubtitle(
   })
 }
 
+export function addDub(taskId: string): Promise<{ id: string; step: string }> {
+  return requestJson<{ id: string; step: string }>(`/api/tasks/${taskId}/dub`, {
+    method: "POST",
+  })
+}
+
 export function resumeTask(taskId: string): Promise<{ id: string; resume_from: string }> {
   return requestJson<{ id: string; resume_from: string }>(`/api/tasks/${taskId}/resume`, {
     method: "POST",

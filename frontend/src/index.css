@@ -139,7 +139,7 @@
 
 @layer components {
   .article-content {
-    @apply mx-auto w-full max-w-[52rem] text-[16px] leading-7 text-foreground;
+    @apply w-full max-w-[52rem] text-[16px] leading-7 text-foreground;
   }
 
   .article-content h1 {

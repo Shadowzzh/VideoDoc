@@ -39,6 +39,12 @@ COPY videodoc/ /app/videodoc/
 RUN /app/.venv/bin/pip install --upgrade pip \
     && /app/.venv/bin/pip install .
 
+# 人声分离（配音保留 BGM）。CPU 版 torch 够用：150 秒音频约 2 分钟，
+# 而 CUDA 版会让镜像多出 4 GB，换来的只是把 2 分钟压到 5 秒。
+RUN /app/.venv/bin/pip install --no-cache-dir \
+        torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    && /app/.venv/bin/pip install --no-cache-dir demucs
+
 # ---------------------------------------------------------------- 阶段 3：运行
 FROM python:3.12-slim
 
@@ -53,6 +59,7 @@ ENV PYTHONUNBUFFERED=1 \
 # 运行期只留 ffmpeg（抽帧/音频）；没有 Node、没有 pnpm、没有编译器等构建期工具
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
+        fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

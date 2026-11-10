@@ -43,6 +43,8 @@ IMAGE_EVIDENCE_STEP = "ocr"
 
 # 字幕步骤：紧跟转写，属于核心流水线而非可插拔能力。
 SUBTITLE_STEP = "subtitle"
+# 配音步骤：依赖字幕，属于核心流水线。
+DUB_STEP = "dub"
 
 
 class PipelineError(RuntimeError):
@@ -1274,6 +1276,219 @@ class VideoArticlePipeline:
         self.task = self.store.get(self.task_id)
         segments = self._load_segments()
         return self._run_subtitle_step(None, segments)
+
+    # ------------------------------------------------------------ 配音
+
+    def _load_subtitle_rows(self) -> list[dict[str, Any]]:
+        """读回中文字幕行；优先单语 ``zh.srt``，没有再试双语。"""
+        for name in ("zh.srt", "bilingual.srt"):
+            rows = subtitles_module.read_srt(self.task_dir / "transcript" / name)
+            if rows:
+                return rows
+        return []
+
+    def _write_dub_script(
+        self,
+        units: list[dict[str, Any]],
+        tone: int,
+        *,
+        squeeze: float = 1.0,
+    ) -> list[dict[str, Any]]:
+        """按单元写配音稿；``squeeze`` < 1 时把目标时长压短，用于第二轮。
+
+        LLM 每次输出措辞都会变，直接重跑会让所有 TTS 缓存失效（16 段要重合成
+        3 分钟）。所以按「原文 + tone + squeeze」做键缓存稿件：输入没变就复用，
+        下游 manifest 的文本哈希才稳定命中。
+        """
+        from . import dub as dub_module
+
+        dub_dir = self.task_dir / "dub"
+        dub_dir.mkdir(parents=True, exist_ok=True)
+        key_source = json.dumps(
+            {"units": [{"id": u["id"], "target": u["target"]} for u in units],
+             "tone": tone, "squeeze": squeeze},
+            sort_keys=True, ensure_ascii=False,
+        )
+        key = hashlib.sha256(key_source.encode()).hexdigest()[:16]
+        cache_path = dub_dir / f"script-cache-{key}.json"
+        if cache_path.is_file():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                scripts = cached.get("scripts")
+                if isinstance(scripts, list) and len(scripts) == len(units):
+                    self.store.append_log(
+                        self.task_id, DUB_STEP, f"配音稿缓存命中（{key}）。")
+                    return scripts
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        counter = {"n": 0}
+
+        def call(messages: list[dict[str, str]]) -> dict[str, Any]:
+            counter["n"] += 1
+            return self._call_llm(
+                DUB_STEP,
+                messages,
+                response_name=f"dub-script-{counter['n']:03d}",
+                label=f"配音稿第 {counter['n']} 块",
+            )
+
+        rows: list[dict[str, Any]] = []
+        for start in range(0, len(units), 30):
+            chunk = [
+                {**unit, "duration": round(float(unit["duration"]) * squeeze, 3)}
+                for unit in units[start:start + 30]
+            ]
+            payload = call(dub_module.build_rewrite_messages(chunk, tone=tone))
+            merged, missing = dub_module.merge_rewrites(chunk, payload)
+            rows.extend(merged)
+            if missing:
+                self.store.append_log(
+                    self.task_id, DUB_STEP,
+                    f"配音稿缺 {len(missing)} 段，已用译文兜底。",
+                )
+        cache_path.write_text(
+            json.dumps({"key": key, "scripts": rows}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return rows
+
+    def _dub(self) -> dict[str, Any]:
+        """生成配音：合并短段 → 写稿 → 合成 → 对齐 → 分离 → 混音 → 成片。"""
+        from . import dub as dub_module
+        from .capabilities.dub import config_from
+        from .dub import align, render, runner, separate, tts
+
+        def log(message: str) -> None:
+            self.store.append_log(self.task_id, DUB_STEP, message)
+
+        config = config_from(settings_module.effective_settings())
+
+        rows = self._load_subtitle_rows()
+        if not rows:
+            log("没有现成中文字幕，先翻译一份。")
+            rows = self._translate_subtitles(self._load_segments())
+            if rows:
+                # 落盘，后面烧字幕和回看都要用；顺便登记成字幕产物。
+                transcript_dir = self.task_dir / "transcript"
+                transcript_dir.mkdir(parents=True, exist_ok=True)
+                subtitles_module.write_srt(rows, transcript_dir / "zh.srt")
+                subtitles_module.write_vtt(rows, transcript_dir / "zh.vtt")
+                self.store.merge_artifacts(self.task_id, {
+                    "subtitle_zh_srt": "transcript/zh.srt",
+                    "subtitle_zh_vtt": "transcript/zh.vtt",
+                    "subtitle_srt": "transcript/zh.srt",
+                    "subtitle_vtt": "transcript/zh.vtt",
+                })
+        if not rows:
+            raise PipelineError("没有可配音的字幕内容。")
+
+        units = align.merge_short([
+            {"id": row["id"], "start": row["start_sec"], "end": row["end_sec"],
+             "target": row.get("target") or row.get("source") or ""}
+            for row in rows
+        ])
+        log(f"配音单元 {len(units)} 个（原字幕 {len(rows)} 段）。")
+
+        scripts = self._write_dub_script(units, config.tone)
+        dub_dir = self.task_dir / "dub"
+        dub_dir.mkdir(parents=True, exist_ok=True)
+
+        backend = tts.MingTTS(config.base_url, config.voice_id)
+        manifest = runner.DubManifest(
+            dub_dir / "manifest.json",
+            voice=config.voice_id,
+            extra=f"tone{config.tone}",
+        )
+        durations = runner.synthesize_all(
+            scripts, backend, manifest, dub_dir / "wav",
+            on_progress=lambda done, total, message: log(f"{message}"),
+        )
+        log(f"合成完成 {len(durations)}/{len(scripts)} 段。")
+
+        plans = align.plan(scripts, durations, config.max_tempo)
+        stats = align.summarize(plans)
+        log(f"对齐：原速 {stats['exact']}、压缩 {stats['compressed']}、"
+            f"吃间隙 {stats['shifted']}、溢出 {stats['overflow']}。")
+
+        overflow = [plan for plan in plans if plan["overflow"]]
+        if overflow:
+            log(f"{len(overflow)} 段超时，压缩预算重写一轮。")
+            squeezed = [
+                {"id": plan["id"], "start": plan["start"], "end": plan["end"],
+                 "duration": plan["duration"], "target": plan["script"]}
+                for plan in overflow
+            ]
+            rescripts = self._write_dub_script(squeezed, config.tone, squeeze=0.85)
+            extra = runner.synthesize_all(
+                rescripts, backend, manifest, dub_dir / "wav",
+                on_progress=lambda done, total, message: log(f"{message}"),
+            )
+            durations.update(extra)
+            by_id = {item["id"]: item for item in rescripts}
+            merged_scripts = [
+                {**plan, "script": by_id.get(plan["id"], {}).get("script", plan["script"])}
+                for plan in plans
+            ]
+            plans = align.plan(merged_scripts, durations, config.max_tempo)
+            log(f"重写后溢出 {align.summarize(plans)['overflow']} 段。")
+
+        (dub_dir / "script.json").write_text(
+            json.dumps(plans, ensure_ascii=False, indent=1), encoding="utf-8")
+
+        audio_path = self.task_dir / "audio" / "transcript.wav"
+        background = audio_path
+        if config.separate:
+            separator = self._pick_separator(config, log)
+            try:
+                _, background = separator.split(audio_path, dub_dir)
+                log(f"已分离人声与背景音乐（{separator.name}）。")
+            except separate.SeparationError as error:
+                log(f"人声分离失败，直接用原音轨：{error}")
+
+        dub_wav = render.mix_dub_track(plans, dub_dir / "wav", dub_dir / "dub.wav")
+        mixed = render.overlay_background(
+            dub_wav, background, dub_dir / "mixed.wav", gain=config.background_gain)
+
+        video_path = self.task_dir / "video" / "source.mp4"
+        srt_path = self.task_dir / "transcript" / "zh.srt"
+        dubbed = self.task_dir / "video" / "dubbed.mp4"
+        if srt_path.is_file():
+            render.burn_subtitles(video_path, srt_path, dubbed,
+                                  bar=config.subtitle_bar)
+        else:
+            render.compose(video_path, mixed, dubbed)
+
+        artifacts = {
+            "dub_script": "dub/script.json",
+            "dub_audio": "dub/dub.wav",
+            "dub_mixed": "dub/mixed.wav",
+            "dubbed_video": "video/dubbed.mp4",
+        }
+        self.store.merge_artifacts(self.task_id, artifacts)
+        self._note_step(DUB_STEP, outputs=list(artifacts.values()))
+        log(f"配音完成：{len(plans)} 段，语气 {config.tone}/10。")
+        return {"segments": len(plans), "overflow": align.summarize(plans)["overflow"],
+                "tone": config.tone, "dubbed": artifacts["dubbed_video"]}
+
+    def _pick_separator(self, config: Any, log: Callable[[str], None]) -> Any:
+        """按配置挑分离器：Ray 优先（GPU，秒级），连不上再退回本地 demucs。"""
+        from .dub import separate
+
+        if config.separator in ("auto", "ray"):
+            ray = separate.RaySeparator(config.ray_spool, config.ray_api)
+            if ray.available():
+                return ray
+            if config.separator == "ray":
+                log("Ray 分离不可用，回退本地 demucs。")
+        return separate.DemucsSeparator(config.demucs_command)
+
+    def run_dub_only(self) -> Any:
+        """给已完成任务补配音：只跑配音步骤。"""
+        if not self._has_step(DUB_STEP):
+            self.store.ensure_step(self.task_id, DUB_STEP, "生成中文配音", SUBTITLE_STEP)
+            self.task = self.store.get(self.task_id)
+        return self._step(DUB_STEP, self._dub)
 
     def _record_transcribe_metrics(
         self,

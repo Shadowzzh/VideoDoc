@@ -31,7 +31,7 @@ def test_section_registers_without_taking_a_pipeline_step():
     assert "text_model" not in {spec.key for spec in registry.step_specs()}
     assert registry.by_step("text_model") is None
     # 设置页要能看到它
-    assert [item.key for item in registry.sections()] == ["image_vision", "text_model"]
+    assert [item.key for item in registry.sections()] == ["image_vision", "text_model", "dub"]
 
 
 def test_defaults_follow_deepseek_official():

@@ -24,6 +24,7 @@ from .base import (
 )
 from . import image_vision  # noqa: F401  内置能力：图像识别（本地 Vision + 云端视觉）
 from . import text_model  # noqa: F401  内置分类：文本模型接入点（大纲 / 正文）
+from . import dub  # noqa: F401  内置分类：配音（TTS + 语气 + 字幕样式）
 
 __all__ = [
     "Availability",

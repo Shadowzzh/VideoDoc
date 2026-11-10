@@ -24,6 +24,7 @@ from . import subtitles as subtitles_module
 from . import settings as settings_module
 from .cancellation import CancellationRegistry, TaskCancellation
 from .pipeline import (
+    DUB_STEP,
     SUBTITLE_STEP,
     PipelineConfig,
     PipelineError,
@@ -371,6 +372,44 @@ def create_app(config: dict | None = None) -> Flask:
 
         executor.submit(job)
         return jsonify({"id": task_id, "mode": mode}), 202
+
+    @app.post("/api/tasks/<task_id>/dub")
+    def add_dub_api(task_id: str):
+        """给已完成任务补配音：中文配音 + 保留 BGM + 烧中文字幕。"""
+        try:
+            store.get(task_id)
+        except KeyError:
+            return jsonify({"error": "任务不存在。"}), 404
+        task_dir = store.task_dir(task_id)
+        if not (task_dir / "transcript" / "segments.json").is_file():
+            return jsonify({"error": "该任务还没有转写结果，无法生成配音。"}), 409
+        if not (task_dir / "video" / "source.mp4").is_file():
+            return jsonify({"error": "该任务缺少源视频。"}), 409
+
+        store.ensure_step(task_id, DUB_STEP, "生成中文配音", after=SUBTITLE_STEP)
+        store.update_step(
+            task_id,
+            DUB_STEP,
+            status="pending",
+            error=None,
+            started_at=None,
+            finished_at=None,
+            outputs=[],
+        )
+        cancellation = cancellations.reset(task_id)
+
+        def job() -> None:
+            try:
+                VideoArticlePipeline(
+                    store, task_id, pipeline_config, cancellation
+                ).run_dub_only()
+            except Exception as error:  # 补配音失败不应把任务整体标成失败
+                store.append_log(task_id, DUB_STEP, f"补配音失败: {error}")
+            finally:
+                cancellations.discard(task_id)
+
+        executor.submit(job)
+        return jsonify({"id": task_id, "step": DUB_STEP}), 202
 
     @app.post("/api/tasks/<task_id>/cancel")
     def cancel_task_api(task_id: str):
