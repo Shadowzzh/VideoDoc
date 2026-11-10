@@ -98,6 +98,7 @@ pnpm --dir frontend install && pnpm --dir frontend build
 |---|---|
 | **文本模型** | 大纲和正文的 BaseURL、模型、Key（明文或密钥文件）、超时、重试与输出 token 上限 |
 | **图像识别** | 本地 macOS Vision OCR 与云端视觉模型的通道、端点、预算 |
+| **配音** | TTS 服务地址、声音 ID、语气强度、变速上限、分离方式、BGM 音量、字幕黑条 |
 
 环境变量完整清单见 [`.env.example`](.env.example)，常用的几项：
 
@@ -113,6 +114,44 @@ pnpm --dir frontend install && pnpm --dir frontend build
 `VIDEODOC_WHISPER_MODEL` 保持默认时，首次运行会自动下载约 1.5GB 的模型。
 网络受限可先自行下载 `ggml-*.bin`，再用该变量指向本地文件；
 体积敏感也可以用更小的档位，例如 `large-v3-turbo-q5_0`（约 570MB）。
+
+## 配音
+
+把中文译文配成本人声音，替换原片人声、保留背景音乐，并烧上中文字幕。
+
+### 链路
+
+```text
+zh.srt → 合并短段 → LLM 写配音稿 → Ming TTS 逐段合成
+  → 按原时间轴对齐（变速上限 1.15）→ demucs 分离原人声
+  → 配音 + BGM 混音 → 烧字幕 → dubbed.mp4
+```
+
+### 人声分离
+
+| 通道 | 106 秒音频 | 何时用 |
+| --- | --- | --- |
+| 容器内 CPU demucs | ~2 分钟 | 默认兜底 |
+| Ray GPU（`demucs` profile） | 4 秒 | 配了 Ray 时自动优先 |
+
+Ray 侧的镜像与 profile 见 Ops 仓库 `hosts/workhorse/demucs-gpu/`。设置页
+「分离方式」可选：自动（优先 Ray）/ 本地 CPU / 强制 Ray GPU。
+
+### 缓存
+
+* `dub/manifest.json`：按「文本 + 声音」哈希缓存每段 TTS，重跑只合成改过的段
+* `dub/script-cache-<key>.json`：按「原文 + tone + squeeze」缓存配音稿，
+  避免 LLM 措辞漂移导致所有 TTS 缓存失效
+
+### 配置项
+
+| 项 | 默认 | 说明 |
+| --- | --- | --- |
+| 语气强度 | 5 | 0 严肃，10 放飞；只影响配音稿，字幕始终忠实翻译 |
+| 变速上限 | 1.15 | 句子超时最多压缩多少倍 |
+| 分离方式 | 自动 | 自动 / 本地 CPU / 强制 Ray GPU |
+| 背景音乐音量 | 0.4 | 相对原音量；1.0 会盖住配音 |
+| 字幕黑条 | 开 | 底部铺半透明黑带 |
 
 ## 已知限制
 
