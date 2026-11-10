@@ -1536,7 +1536,7 @@ class VideoArticlePipeline:
             burned = srt_path.is_file()
             if burned:
                 render.burn_subtitles(video_path, srt_path, dubbed,
-                                      bar=config.subtitle_bar)
+                                      audio=mixed, bar=config.subtitle_bar)
             else:
                 render.compose(video_path, mixed, dubbed)
             self.store.update_stage(

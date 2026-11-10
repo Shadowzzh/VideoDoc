@@ -21,6 +21,7 @@ import { DubButton } from "@/components/dub-button"
 import { SubtitleMenuButton } from "@/components/subtitle-menu-button"
 import { SubtitleTracks } from "@/components/subtitle-tracks"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
@@ -485,7 +486,7 @@ function ResultHeader({
   return (
     <header className="flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 md:flex-row md:items-center md:justify-between md:gap-4 md:px-6">
       <div className="min-w-0">
-        <div className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground"><span>已完成任务</span><ChevronRightIcon className="size-3" /><span>文章</span></div>
+        <div className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground"><span>已完成任务</span><ChevronRightIcon className="size-3" /><span>文章</span>{result.dubbed ? <Badge variant="secondary">配音版</Badge> : null}</div>
         <h1 className="truncate text-lg font-semibold tracking-tight">{resultTitle(result)}</h1>
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1">

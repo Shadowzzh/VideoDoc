@@ -500,6 +500,16 @@ def create_app(config: dict | None = None) -> Flask:
         result["subtitle_mode"] = task.get("subtitle_mode")
         result["subtitle_vtt"] = artifacts.get("subtitle_vtt")
         result["subtitle_srt"] = artifacts.get("subtitle_srt")
+        # 配音成片优先：补过配音的任务，结果页应当播放配音版。
+        # 以前 result.json 写死 video/source.mp4，配音跑完也还是放原片，
+        # 用户看到字幕却听不到配音。
+        dubbed = task_dir / "video" / "dubbed.mp4"
+        if dubbed.is_file():
+            result["video_original"] = result.get("video")
+            result["video"] = "video/dubbed.mp4"
+            result["dubbed"] = True
+        else:
+            result["dubbed"] = False
         return jsonify(result)
 
     @app.get("/tasks/<task_id>/media/<path:filename>")

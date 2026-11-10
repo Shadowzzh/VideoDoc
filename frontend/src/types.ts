@@ -223,6 +223,10 @@ export interface VideoResult {
   metadata: TaskMetadata
   article_title?: string
   video: string
+  /** 已配过音时为原始视频路径，供以后做「切回原片」。 */
+  video_original?: string | null
+  /** 当前播放的是否是配音成片。 */
+  dubbed?: boolean
   /** 当前字幕轨（最近一次生成）；没有字幕时为 null。 */
   subtitle_vtt?: string | null
   subtitle_srt?: string | null

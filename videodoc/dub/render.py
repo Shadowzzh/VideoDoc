@@ -175,6 +175,7 @@ def burn_subtitles(
     srt: Path,
     out: Path,
     *,
+    audio: Path | None = None,
     bar: bool = True,
     bar_height: int | None = None,
     bar_alpha: float = DEFAULT_BAR_ALPHA,
@@ -185,6 +186,10 @@ def burn_subtitles(
     crf: int = 20,
 ) -> Path:
     """烧录硬字幕。``bar`` 为真时先在底部铺一条半透明黑带。
+
+    ``audio`` 给了就把它当作成片音轨（配音链路传入混音后的 wav）；不给则
+    沿用原片音轨（只烧字幕、不动声音）。以前这个函数只会 ``-c:a copy``，
+    配音完成后传进来的仍是原音轨，于是成片只有字幕、听不到配音。
 
     字号和黑条默认按视频高度比例算：1080p 用 54px 字号、156px 黑条，360p 自动
     缩到 18px / 52px。写死像素会让同一套样式在两种分辨率上差异巨大。
@@ -208,11 +213,16 @@ def burn_subtitles(
     style = _subtitle_style(font, font_size, margin_v, boxed=False)
     filters.append(f"subtitles={srt}:force_style='{style}'")
 
-    args = [
-        "ffmpeg", "-y", "-i", str(video), "-vf", ",".join(filters),
-        "-c:a", "copy", "-c:v", encoder, "-crf", str(crf),
-        "-preset", "medium", str(out),
-    ]
+    args = ["ffmpeg", "-y", "-i", str(video)]
+    if audio is not None:
+        args += ["-i", str(audio)]
+    args += ["-vf", ",".join(filters)]
+    if audio is not None:
+        args += ["-map", "0:v", "-map", "1:a",
+                 "-c:a", "aac", "-b:a", "192k", "-shortest"]
+    else:
+        args += ["-c:a", "copy"]
+    args += ["-c:v", encoder, "-crf", str(crf), "-preset", "medium", str(out)]
     _run(args)
     return out
 
