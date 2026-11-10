@@ -10,6 +10,7 @@ import {
 import { useEffect, useRef, useState, type RefObject } from "react"
 import { Rnd } from "react-rnd"
 
+import { SubtitleTracks } from "@/components/subtitle-tracks"
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { mediaHref } from "@/lib/api"
@@ -28,7 +29,7 @@ import {
   type ViewportSize,
 } from "@/lib/floating-video-window"
 import { cn } from "@/lib/utils"
-import type { OutlineSection, VideoResult } from "@/types"
+import type { OutlineSection, VideoResult, SubtitleTrack } from "@/types"
 
 export const FLOATING_VIDEO_STORAGE_KEY = "videodoc-floating-video-rect-v1"
 
@@ -43,7 +44,8 @@ interface FloatingVideoAssistantProps {
   onToggleSize: () => void
   onToggleFullscreen: () => void
   onHide: () => void
-  subtitleVtt?: string | null
+  subtitleTracks?: SubtitleTrack[]
+  subtitleMode?: string | null
 }
 
 export function FloatingVideoAssistant({
@@ -56,7 +58,8 @@ export function FloatingVideoAssistant({
   onToggleSize,
   onToggleFullscreen,
   onHide,
-  subtitleVtt,
+  subtitleTracks,
+  subtitleMode,
 }: FloatingVideoAssistantProps) {
   const [viewport, setViewport] = useState(readViewportSize)
   const [floatingRect, setFloatingRect] = useState(() => readStoredRect(readViewportSize()))
@@ -174,9 +177,7 @@ export function FloatingVideoAssistant({
                 src={mediaHref(taskId, result.video)}
                 className="h-full w-full bg-black object-contain"
               >
-                {subtitleVtt ? (
-                  <track kind="subtitles" srcLang="zh" label="中文" src={mediaHref(taskId, subtitleVtt)} default />
-                ) : null}
+                <SubtitleTracks taskId={taskId} tracks={subtitleTracks} mode={subtitleMode} />
               </video>
               <div className="absolute right-2 top-2 flex gap-1">
                 <Button type="button" variant="secondary" size="icon" aria-label={sizeLabel} onClick={onToggleSize}>
