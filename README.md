@@ -127,6 +127,17 @@ zh.srt → 合并短段 → LLM 写配音稿 → Ming TTS 逐段合成
   → 配音 + BGM 混音 → 烧字幕 → dubbed.mp4
 ```
 
+### 成片与播放
+
+`video/dubbed.mp4` 的音轨是混音结果（配音 + 背景音乐），字幕烧成硬字幕；
+原始视频 `video/source.mp4` 保持不变。烧字幕时必须把 `dub/mixed.wav` 作为音轨传入
+（`burn_subtitles(audio=…)`）——早期版本只 `-c:a copy` 复制原音轨，结果成片只有字幕、
+听不到配音。
+
+结果接口会把 `result.json` 的 `video` 改写为 `video/dubbed.mp4`（保留
+`video_original` 与 `dubbed: true`），所以补过配音的任务打开结果页直接播配音版，
+面包屑显示「配音版」徽标。
+
 ### 人声分离
 
 | 通道 | 106 秒音频 | 何时用 |
